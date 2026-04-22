@@ -1,0 +1,354 @@
+version: "3.8"
+
+# ── Airflow shared anchor ─────────────────────────────────────────────────────
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.8.1-python3.9
+  env_file: .env
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_secret_2026@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: 46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nfdW0M=
+    AIRFLOW__WEBSERVER__SECRET_KEY: healthcare_webserver_secret_2026
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    AIRFLOW_HOME: /opt/airflow
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    PYTHONPATH: /opt/airflow/src
+    CLICKHOUSE_HOST: clickhouse
+    CLICKHOUSE_HTTP_PORT: "8123"
+    CLICKHOUSE_DB: healthcare
+    CLICKHOUSE_USER: healthcare_user
+    CLICKHOUSE_PASSWORD: ch_secret_2026
+    HDFS_NAMENODE_HOST: namenode
+    HDFS_NAMENODE_PORT: "9001"
+    MLFLOW_TRACKING_URI: http://mlflow:5001
+    _AIRFLOW_WWW_USER_CREATE: "true"
+    _AIRFLOW_WWW_USER_USERNAME: admin
+    _AIRFLOW_WWW_USER_PASSWORD: admin_secret_2026
+    _AIRFLOW_WWW_USER_FIRSTNAME: Healthcare
+    _AIRFLOW_WWW_USER_LASTNAME: Admin
+    _AIRFLOW_WWW_USER_EMAIL: admin@healthcare.local
+    _AIRFLOW_WWW_USER_ROLE: Admin
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./src:/opt/airflow/src
+    - ./data:/opt/airflow/data
+    - ./models:/opt/airflow/models
+    - ./logs/airflow:/opt/airflow/logs
+    - mlflow_artifacts:/mlflow/artifacts
+  user: "50000:0"
+  networks:
+    - healthcare_net
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+# ── Hadoop shared anchor ──────────────────────────────────────────────────────
+x-hadoop-common: &hadoop-common
+  env_file:
+    - hadoop.env
+    - .env
+  networks:
+    - healthcare_net
+  restart: unless-stopped
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15.3-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow_secret_2026
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/postgres/init-mlflow-db.sql:/docker-entrypoint-initdb.d/init-mlflow-db.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - healthcare_net
+    restart: unless-stopped
+
+  # ── pgAdmin ─────────────────────────────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:7.8
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@healthcare.local
+      PGADMIN_DEFAULT_PASSWORD: pgadmin_secret_2026
+    ports:
+      - "5055:80"
+    depends_on:
+      - postgres
+    networks:
+      - healthcare_net
+    restart: unless-stopped
+
+  # ── ClickHouse ──────────────────────────────────────────────────────────────
+  # Healthcheck uses wget (built-in) — clickhouse-client is NOT in PATH by default
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: clickhouse
+    environment:
+      CLICKHOUSE_DB: healthcare
+      CLICKHOUSE_USER: healthcare_user
+      CLICKHOUSE_PASSWORD: ch_secret_2026
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - ./data/clickhouse:/var/lib/clickhouse
+      - ./docker/clickhouse/config.xml:/etc/clickhouse-server/config.d/custom.xml:ro
+      - ./docker/clickhouse/users.xml:/etc/clickhouse-server/users.d/healthcare_user.xml:ro
+      - ./docker/clickhouse/init:/docker-entrypoint-initdb.d:ro
+      - ./data/features:/mnt/features:ro
+    ports:
+      - "8123:8123"
+      - "9900:9000"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- 'http://healthcare_user:ch_secret_2026@localhost:8123/?query=SELECT%201' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - healthcare_net
+    restart: unless-stopped
+
+  # ── HDFS Namenode ───────────────────────────────────────────────────────────
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    <<: *hadoop-common
+    environment:
+      CLUSTER_NAME: healthcare-cluster
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9001
+    volumes:
+      - namenode_data:/hadoop/dfs/name
+      - ./data/raw:/mnt/data/raw
+      - ./data/processed:/mnt/data/processed
+      - ./data/features:/mnt/data/features
+      - ./src:/mnt/src
+      - ./models:/mnt/models
+      - mlflow_artifacts:/mlflow/artifacts
+    ports:
+      - "9870:9870"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9870"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── HDFS Datanode ───────────────────────────────────────────────────────────
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode
+    <<: *hadoop-common
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870"
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9001
+    volumes:
+      - datanode_data:/hadoop/dfs/data
+    ports:
+      - "9864:9864"
+    depends_on:
+      - namenode
+
+  # ── YARN ResourceManager ────────────────────────────────────────────────────
+  resourcemanager:
+    image: bde2020/hadoop-resourcemanager:2.0.0-hadoop3.2.1-java8
+    container_name: resourcemanager
+    <<: *hadoop-common
+    environment:
+      SERVICE_PRECONDITION: "namenode:9001 namenode:9870 datanode:9864"
+    ports:
+      - "8088:8088"
+    depends_on:
+      - namenode
+      - datanode
+
+  # ── YARN NodeManager ────────────────────────────────────────────────────────
+  nodemanager:
+    image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.2.1-java8
+    container_name: nodemanager
+    <<: *hadoop-common
+    environment:
+      SERVICE_PRECONDITION: "namenode:9001 namenode:9870 datanode:9864 resourcemanager:8088"
+    ports:
+      - "8042:8042"
+    depends_on:
+      - resourcemanager
+
+  # ── Spark History Server ────────────────────────────────────────────────────
+  historyserver:
+    image: bde2020/hadoop-historyserver:2.0.0-hadoop3.2.1-java8
+    container_name: historyserver
+    <<: *hadoop-common
+    environment:
+      SERVICE_PRECONDITION: "namenode:9001 namenode:9870 datanode:9864 resourcemanager:8088"
+    volumes:
+      - historyserver_data:/hadoop/yarn/timeline
+    ports:
+      - "8188:8188"
+    depends_on:
+      - resourcemanager
+
+  # ── Spark Master ────────────────────────────────────────────────────────────
+  # SPARK_NO_DAEMONIZE keeps the process in the foreground so Docker doesn't
+  # think the container exited.
+  spark-master:
+    image: apache/spark:3.5.3
+    container_name: spark-master
+    user: root
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+      - SPARK_MASTER_HOST=spark-master
+      - SPARK_MASTER_PORT=7077
+      - SPARK_MASTER_WEBUI_PORT=8080
+    entrypoint: ["/opt/spark/sbin/start-master.sh"]
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    networks:
+      - healthcare_net
+    restart: unless-stopped
+
+  # ── Spark Worker ────────────────────────────────────────────────────────────
+  spark-worker:
+    image: apache/spark:3.5.3
+    container_name: spark-worker
+    user: root
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+      - SPARK_WORKER_MEMORY=4g
+      - SPARK_WORKER_CORES=4
+      - SPARK_WORKER_WEBUI_PORT=8081
+    entrypoint: ["/opt/spark/sbin/start-worker.sh", "spark://spark-master:7077"]
+    ports:
+      - "8082:8081"
+    depends_on:
+      - spark-master
+    networks:
+      - healthcare_net
+    restart: unless-stopped
+
+  # ── Airflow Init ────────────────────────────────────────────────────────────
+  # restart: "no" is critical — this is a one-shot init job, not a service.
+  # It uses the _AIRFLOW_WWW_USER_* env vars from the anchor to create the
+  # admin user automatically during `db migrate`.
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    command: ["db", "migrate"]
+    restart: "no"
+    # Override the depends_on from the anchor — init only needs postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Airflow Webserver ───────────────────────────────────────────────────────
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Airflow Scheduler ───────────────────────────────────────────────────────
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── MLflow ──────────────────────────────────────────────────────────────────
+  mlflow:
+    build:
+      context: ./docker/mlflow
+      dockerfile: Dockerfile
+    container_name: mlflow
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://airflow:airflow_secret_2026@postgres:5432/mlflow
+      MLFLOW_ARTIFACT_ROOT: /mlflow/artifacts
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    ports:
+      - "5001:5001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - healthcare_net
+    restart: unless-stopped
+
+  # ── App (Flask API + Streamlit) ─────────────────────────────────────────────
+  # Runs a health endpoint so the container stays alive during development
+  # even before the full API is implemented.
+  app:
+    build:
+      context: ./docker/app
+      dockerfile: Dockerfile
+    container_name: app
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_HTTP_PORT=8123
+      - CLICKHOUSE_DB=healthcare
+      - CLICKHOUSE_USER=healthcare_user
+      - CLICKHOUSE_PASSWORD=ch_secret_2026
+      - MLFLOW_TRACKING_URI=http://mlflow:5001
+      - FLASK_ENV=development
+    volumes:
+      - ./src:/app/src
+      - ./models:/app/models
+      - mlflow_artifacts:/mlflow/artifacts
+    ports:
+      - "5050:5050"
+      - "8501:8501"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    networks:
+      - healthcare_net
+    restart: unless-stopped
+
+networks:
+  healthcare_net:
+    driver: bridge
+    name: healthcare_net
+
+volumes:
+  postgres_data:
+  namenode_data:
+  datanode_data:
+  historyserver_data:
+  mlflow_artifacts:

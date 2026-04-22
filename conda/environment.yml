@@ -1,0 +1,25 @@
+name: healthcare-rec
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+    - pyspark==3.5.0
+    - clickhouse-connect==0.7.0   # replaces pyhive / jaydebeapi
+    - pandas==2.1.4
+    - numpy==1.26.3
+    - scikit-learn==1.4.0
+    - xgboost==2.0.3
+    - mlflow==2.10.0
+    - apache-airflow==2.8.1
+    - apache-airflow-providers-postgres
+    - psycopg2-binary==2.9.9
+    - flask==3.0.0
+    - streamlit==1.30.0
+    - synthea-python>=0.1.0
+    - requests==2.31.0
+    - pyarrow==14.0.2
+    - fastparquet==2023.10.1
+    - pytest==7.4.4
