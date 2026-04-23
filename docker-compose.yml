@@ -1,5 +1,3 @@
-version: "3.8"
-
 # ── Airflow shared anchor ─────────────────────────────────────────────────────
 x-airflow-common: &airflow-common
   image: apache/airflow:2.8.1-python3.9
@@ -98,15 +96,12 @@ services:
     container_name: clickhouse
     environment:
       CLICKHOUSE_DB: healthcare
-      CLICKHOUSE_USER: healthcare_user
-      CLICKHOUSE_PASSWORD: ch_secret_2026
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - ./data/clickhouse:/var/lib/clickhouse
       - ./docker/clickhouse/config.xml:/etc/clickhouse-server/config.d/custom.xml:ro
       - ./docker/clickhouse/users.xml:/etc/clickhouse-server/users.d/healthcare_user.xml:ro
       - ./docker/clickhouse/init:/docker-entrypoint-initdb.d:ro
-      - ./data/features:/mnt/features:ro
+      - ./data/features:/mnt/features
     ports:
       - "8123:8123"
       - "9900:9000"
@@ -115,11 +110,11 @@ services:
         soft: 262144
         hard: 262144
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- 'http://healthcare_user:ch_secret_2026@localhost:8123/?query=SELECT%201' || exit 1"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", "/usr/bin/clickhouse-client --query 'SELECT 1' > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
       retries: 10
-      start_period: 30s
+      start_period: 60s
     networks:
       - healthcare_net
     restart: unless-stopped
@@ -248,16 +243,28 @@ services:
   # It uses the _AIRFLOW_WWW_USER_* env vars from the anchor to create the
   # admin user automatically during `db migrate`.
   airflow-init:
-    <<: *airflow-common
+    image: apache/airflow:2.8.1-python3.9
     container_name: airflow-init
-    command: ["db", "migrate"]
     restart: "no"
-    # Override the depends_on from the anchor — init only needs postgres
+    user: "50000:0"
+    env_file: .env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_secret_2026@postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: 46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nfdW0M=
+      AIRFLOW__WEBSERVER__SECRET_KEY: healthcare_webserver_secret_2026
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW_HOME: /opt/airflow
+    volumes:
+      - ./logs/airflow:/opt/airflow/logs
+    networks:
+      - healthcare_net
     depends_on:
       postgres:
         condition: service_healthy
+    command: ["db", "migrate"]
 
-  # ── Airflow Webserver ───────────────────────────────────────────────────────
+
   airflow-webserver:
     <<: *airflow-common
     container_name: airflow-webserver

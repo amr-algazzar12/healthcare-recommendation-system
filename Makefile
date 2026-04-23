@@ -1,6 +1,6 @@
 .PHONY: up down restart logs ps verify \
         shell-namenode shell-clickhouse shell-airflow shell-spark \
-        generate-data init-hdfs load-hdfs load-clickhouse create-airflow-user \
+        generate-data init-hdfs load-hdfs init_clickhouse load-clickhouse create-airflow-user \
         pipeline clean
 
 # ── Correct startup sequence ──────────────────────────────────────────────────
@@ -66,6 +66,9 @@ load-hdfs:
 	docker exec namenode sh -c "hdfs dfs -moveFromLocal /tmp/data_raw/*.csv hdfs://namenode:9001/data/raw/"
 	docker exec namenode rm -rf /tmp/data_raw/
 	docker exec namenode hdfs dfs -ls hdfs://namenode:9001/data/raw/
+
+init_clickhouse:
+	docker exec -i clickhouse clickhouse-client --multiquery < docker/clickhouse/init/01_create_schema.sql
 
 load-clickhouse:
 	bash scripts/load_clickhouse.sh

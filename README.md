@@ -47,7 +47,7 @@ make verify
 | Airflow      | admin                   | admin_secret_2026  |
 | ClickHouse   | healthcare_user         | ch_secret_2026     |
 | PostgreSQL   | airflow                 | airflow_secret_2026|
-| pgAdmin      | admin@healthcare.local  | pgadmin_secret_2026|
+| pgAdmin      | admin@healthcare.local  |  |
 
 ## Architecture changes from v4 (Hive → ClickHouse)
 
