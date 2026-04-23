@@ -1,7 +1,7 @@
 .PHONY: up down restart logs ps verify \
         shell-namenode shell-clickhouse shell-airflow shell-spark \
-        generate-data init-hdfs load-hdfs init_clickhouse load-clickhouse create-airflow-user \
-        pipeline clean
+        generate-data init-hdfs load-hdfs clean-hdfs init_clickhouse load-clickhouse clean-clickhouse create-airflow-user \
+        init-everything pipeline clean
 
 # ── Correct startup sequence ──────────────────────────────────────────────────
 # 1. postgres must be healthy before airflow-init runs
@@ -24,6 +24,7 @@ up:
 	  else \
 	    echo "ERROR: airflow-init failed (exit $$EXIT). Check: docker logs airflow-init"; \
 	  fi
+	docker Container start airflow-webserver airflow-scheduler
 
 down:
 	docker compose down
@@ -62,22 +63,47 @@ init-hdfs:
 	docker exec namenode hdfs dfs -chmod -R 777 hdfs://namenode:9001/data
 
 load-hdfs:
-	docker cp ./data/raw/ namenode:/tmp/data_raw/
-	docker exec namenode sh -c "hdfs dfs -moveFromLocal /tmp/data_raw/*.csv hdfs://namenode:9001/data/raw/"
-	docker exec namenode rm -rf /tmp/data_raw/
+	docker exec namenode sh -c "hdfs dfs -put /mnt/data/raw/* hdfs://namenode:9001/data/raw/"
 	docker exec namenode hdfs dfs -ls hdfs://namenode:9001/data/raw/
+# 	docker cp ./data/raw/ namenode:/tmp/data_raw/
+# 	docker exec namenode sh -c "hdfs dfs -moveFromLocal /tmp/data_raw/*.csv hdfs://namenode:9001/data/raw/"
+# 	docker exec namenode rm -rf /tmp/data_raw/
+# 	docker exec namenode hdfs dfs -ls hdfs://namenode:9001/data/raw/
+
+clean-hdfs:
+	docker exec namenode sh -c "hdfs dfs -rm -r hdfs://namenode:9001/data/raw/*"	
 
 init_clickhouse:
 	docker exec -i clickhouse clickhouse-client --multiquery < docker/clickhouse/init/01_create_schema.sql
 
 load-clickhouse:
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.patients;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.conditions;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.medications;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.observations;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.recommendations;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.patient_features;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.encounters;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.procedures;"
 	bash scripts/load_clickhouse.sh
+
+clean-clickhouse:
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.patients;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.conditions;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.medications;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.observations;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.recommendations;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.patient_features;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.encounters;"
+	docker exec clickhouse clickhouse-client --query "TRUNCATE TABLE IF EXISTS healthcare.procedures;"
 
 create-airflow-user:
 	docker exec airflow-webserver airflow users create \
 	  --username admin --firstname Healthcare --lastname Admin \
 	  --role Admin --email admin@healthcare.local \
 	  --password admin_secret_2026 2>/dev/null || echo "User already exists"
+
+init-everything: init-hdfs init_clickhouse create-airflow-user	
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 verify:

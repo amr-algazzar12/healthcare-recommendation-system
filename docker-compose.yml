@@ -79,7 +79,7 @@ services:
     image: dpage/pgadmin4:7.8
     container_name: pgadmin
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@healthcare.local
+      PGADMIN_DEFAULT_EMAIL: admin@healthcare.com
       PGADMIN_DEFAULT_PASSWORD: pgadmin_secret_2026
     ports:
       - "5055:80"
