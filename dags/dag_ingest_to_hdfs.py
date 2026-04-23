@@ -74,12 +74,11 @@ with DAG(
     ensure_hdfs_dirs = BashOperator(
         task_id="ensure_hdfs_dirs",
         bash_command="""
-            hdfs dfs -mkdir -p {raw} && \
-            hdfs dfs -mkdir -p hdfs://namenode:9001/data/processed && \
-            hdfs dfs -mkdir -p hdfs://namenode:9001/data/features && \
-            hdfs dfs -chmod -R 777 hdfs://namenode:9001/data && \
+            curl -sf -X PUT "http://namenode:9870/webhdfs/v1/data/raw?op=MKDIRS&permission=777" && \
+            curl -sf -X PUT "http://namenode:9870/webhdfs/v1/data/processed?op=MKDIRS&permission=777" && \
+            curl -sf -X PUT "http://namenode:9870/webhdfs/v1/data/features?op=MKDIRS&permission=777" && \
             echo "HDFS directories ready"
-        """.format(raw=HDFS_RAW),
+        """,
     )
 
     # Task 3 — load CSVs into HDFS
@@ -89,59 +88,70 @@ with DAG(
     #   The Makefile uses docker cp + moveFromLocal from the host;
     #   from inside Airflow we use -put -f directly (same result,
     #   no temp copy needed because the volume is already mounted).
-    put_hdfs = BashOperator(
+    def _put_to_hdfs():
+        import os, requests, logging
+
+        namenode = "http://namenode:9870/webhdfs/v1"
+        raw_dir  = RAW_DATA_DIR
+
+        # Resolve Synthea subdirectory if present
+        if os.path.isdir(os.path.join(raw_dir, "csv")):
+            raw_dir = os.path.join(raw_dir, "csv")
+
+        logging.info(f"==> Uploading CSVs from {raw_dir}")
+
+        for table in EXPECTED_TABLES:
+            csv_path = os.path.join(raw_dir, f"{table}.csv")
+            if not os.path.isfile(csv_path):
+                raise FileNotFoundError(f"{csv_path} not found")
+
+            hdfs_path = f"/data/raw/{table}.csv"
+            url = f"{namenode}{hdfs_path}?op=CREATE&overwrite=true&noredirect=true"
+
+            # Step 1 — get the datanode redirect URL
+            r1 = requests.put(url, allow_redirects=False)
+            if r1.status_code != 200:
+                raise RuntimeError(f"Step 1 failed for {table}: {r1.status_code} {r1.text}")
+            upload_url = r1.json()["Location"]
+
+            # Step 2 — stream the file to the datanode
+            logging.info(f"  Uploading {table}.csv ({os.path.getsize(csv_path) // 1_000_000} MB)...")
+            with open(csv_path, "rb") as fh:
+                r2 = requests.put(upload_url, data=fh,
+                                  headers={"Content-Type": "application/octet-stream"})
+            if r2.status_code not in (200, 201):
+                raise RuntimeError(f"Step 2 failed for {table}: {r2.status_code} {r2.text}")
+            logging.info(f"  {table}.csv — OK")
+
+        logging.info("==> All CSVs uploaded to HDFS")
+
+    put_hdfs = PythonOperator(
         task_id="put_to_hdfs",
-        bash_command="""
-            set -e
-            RAW_DIR="{raw_dir}"
-
-            # Resolve Synthea subdirectory if present
-            if [ -d "$RAW_DIR/csv" ]; then
-                RAW_DIR="$RAW_DIR/csv"
-            fi
-
-            echo "==> Uploading CSVs from $RAW_DIR to {hdfs_raw}"
-
-            for TABLE in {tables}; do
-                CSV="$RAW_DIR/$TABLE.csv"
-                if [ ! -f "$CSV" ]; then
-                    echo "ERROR: $CSV not found"
-                    exit 1
-                fi
-                echo "  Putting $TABLE.csv..."
-                hdfs dfs -put -f "$CSV" {hdfs_raw}/
-            done
-
-            echo "==> HDFS listing:"
-            hdfs dfs -ls {hdfs_raw}/
-        """.format(
-            raw_dir=RAW_DATA_DIR,
-            hdfs_raw=HDFS_RAW,
-            tables=" ".join(f"{t}" for t in EXPECTED_TABLES),
-        ),
+        python_callable=_put_to_hdfs,
     )
 
     # Task 4 — verify row counts in HDFS
-    verify_hdfs = BashOperator(
+    def _verify_hdfs():
+        import requests, logging
+
+        namenode = "http://namenode:9870/webhdfs/v1"
+
+        for table in EXPECTED_TABLES:
+            hdfs_path = f"/data/raw/{table}.csv"
+            url = f"{namenode}{hdfs_path}?op=GETFILESTATUS"
+            r = requests.get(url)
+            if r.status_code != 200:
+                raise RuntimeError(f"{table}.csv not found in HDFS: {r.status_code} {r.text}")
+            length = r.json()["FileStatus"]["length"]
+            if length < 10:
+                raise RuntimeError(f"{table}.csv is empty in HDFS (length={length})")
+            logging.info(f"  {table}.csv — {length // 1_000_000} MB — OK")
+
+        logging.info("==> All tables verified in HDFS")
+
+    verify_hdfs = PythonOperator(
         task_id="verify_hdfs",
-        bash_command="""
-            set -e
-            echo "==> Verifying HDFS row counts:"
-            for TABLE in {tables}; do
-                LINES=$(hdfs dfs -cat {hdfs_raw}/$TABLE.csv 2>/dev/null | wc -l)
-                # subtract 1 for header
-                ROWS=$((LINES - 1))
-                echo "  $TABLE: $ROWS rows"
-                if [ "$ROWS" -lt 1 ]; then
-                    echo "ERROR: $TABLE is empty in HDFS"
-                    exit 1
-                fi
-            done
-            echo "==> All tables verified OK"
-        """.format(
-            hdfs_raw=HDFS_RAW,
-            tables=" ".join(EXPECTED_TABLES),
-        ),
+        python_callable=_verify_hdfs,
     )
 
     # Task 5 — trigger next DAG

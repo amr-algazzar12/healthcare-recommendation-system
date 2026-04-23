@@ -14,7 +14,7 @@ REQUIRED_COLUMNS = {
     "medications":  {"START", "PATIENT", "CODE", "DESCRIPTION"},
     "observations": {"DATE", "PATIENT", "CODE", "DESCRIPTION", "VALUE"},
     "encounters":   {"Id", "START", "PATIENT", "ENCOUNTERCLASS"},
-    "procedures":   {"DATE", "PATIENT", "CODE", "DESCRIPTION"},
+    "procedures":   {"START", "PATIENT", "CODE", "DESCRIPTION"},
 }
 
 

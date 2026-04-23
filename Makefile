@@ -1,4 +1,4 @@
-.PHONY: up down restart logs ps verify \
+.PHONY: up fix-airflow down restart logs ps verify \
         shell-namenode shell-clickhouse shell-airflow shell-spark \
         generate-data init-hdfs load-hdfs clean-hdfs init_clickhouse load-clickhouse clean-clickhouse create-airflow-user \
         init-everything pipeline clean
@@ -24,7 +24,13 @@ up:
 	  else \
 	    echo "ERROR: airflow-init failed (exit $$EXIT). Check: docker logs airflow-init"; \
 	  fi
-	docker Container start airflow-webserver airflow-scheduler
+	sudo chown -R 50000:0 ./logs/airflow
+	docker compose restart airflow-init airflow-webserver airflow-scheduler
+
+fix-airflow:
+	sudo chown -R 50000:0 ./logs/airflow
+	sudo chmod -R 775 ./logs/airflow
+	docker compose restart airflow-init airflow-webserver airflow-scheduler
 
 down:
 	docker compose down

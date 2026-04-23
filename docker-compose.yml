@@ -257,6 +257,7 @@ services:
       AIRFLOW_HOME: /opt/airflow
     volumes:
       - ./logs/airflow:/opt/airflow/logs
+      - ./dags:/opt/airflow/dags
     networks:
       - healthcare_net
     depends_on:
@@ -277,6 +278,8 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    volumes:
+      - ./dags:/opt/airflow/dags
     depends_on:
       postgres:
         condition: service_healthy
