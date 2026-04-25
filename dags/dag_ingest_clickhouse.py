@@ -16,8 +16,9 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+from airflow.utils.dates import days_ago
 from airflow.operators.python import PythonOperator
-# from airflow.operators.trigger_dagrun import TriggerDagRunOperator  # M2
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator  
 
 default_args = {
     "owner": "healthcare",
@@ -52,7 +53,7 @@ with DAG(
     default_args=default_args,
     description="Load Synthea CSVs into ClickHouse (Milestone 1)",
     schedule_interval=None,
-    start_date=datetime(2026, 1, 1),
+    start_date=days_ago(1),
     catchup=False,
     tags=["milestone-1", "clickhouse"],
 ) as dag:
@@ -124,13 +125,13 @@ with DAG(
         python_callable=_verify_row_counts,
     )
 
-    # ── Task 4 — trigger M2 (commented out until Milestone 2 is ready) ────────
-    # trigger_spark = TriggerDagRunOperator(
-    #     task_id="trigger_dag_spark_processing",
-    #     trigger_dag_id="dag_spark_processing",
-    #     wait_for_completion=False,
-    # )
+    # ── Task 4 — trigger M2  ────────
+    trigger_spark = TriggerDagRunOperator(
+        task_id="trigger_dag_spark_processing",
+        trigger_dag_id="dag_spark_processing",
+        wait_for_completion=False,
+    )
 
     # ── Dependencies ──────────────────────────────────────────────────────────
     truncate >> load >> verify
-    # verify >> trigger_spark
+    verify >> trigger_spark

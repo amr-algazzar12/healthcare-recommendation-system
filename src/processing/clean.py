@@ -13,22 +13,8 @@ Run via:
     make run-clean
     (docker exec spark-master /opt/spark/bin/spark-submit ...)
 """
-"""
 **Issue Description:**
 
-During the initial run of the data cleaning job, we encountered a mismatch in table names.
-
-The pipeline is supposed to read raw data from HDFS and then perform cleaning before further processing. However, the issue occurred because the table names in ClickHouse were not consistent with the corresponding datasets in HDFS.
-
-This mismatch caused confusion in mapping the data correctly, leading to failures in the cleaning step.
-
-**Root Cause:**
-Inconsistent naming conventions between HDFS datasets and ClickHouse tables.
-
-**Suggested Fix:**
-Ensure unified and consistent naming for all tables across both HDFS and ClickHouse to avoid mapping issues.
-
-"""
 import os
 from datetime import datetime
 
