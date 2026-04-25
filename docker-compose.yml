@@ -215,9 +215,13 @@ services:
       - SPARK_MASTER_PORT=7077
       - SPARK_MASTER_WEBUI_PORT=8080
     entrypoint: ["/opt/spark/sbin/start-master.sh"]
+    volumes:
+      - ./src:/opt/airflow/src
+      - ./data:/opt/airflow/data
     ports:
       - "8080:8080"
       - "7077:7077"
+      - "6066:6066"
     networks:
       - healthcare_net
     restart: unless-stopped
@@ -233,6 +237,9 @@ services:
       - SPARK_WORKER_CORES=4
       - SPARK_WORKER_WEBUI_PORT=8081
     entrypoint: ["/opt/spark/sbin/start-worker.sh", "spark://spark-master:7077"]
+    volumes:
+      - ./src:/opt/airflow/src
+      - ./data:/opt/airflow/data
     ports:
       - "8082:8081"
     depends_on:

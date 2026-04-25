@@ -116,22 +116,20 @@ create-airflow-user:
 init-everything: init-hdfs init-clickhouse create-airflow-user	
 
 run-clean:
-	docker exec airflow-scheduler \
-	  /opt/spark/bin/spark-submit \
-	    --master spark://spark-master:7077 \
-	    --deploy-mode client \
-	    --executor-memory 2g \
-	    --driver-memory 1g \
-	    /opt/airflow/src/processing/clean.py
+	docker exec spark-master /opt/spark/bin/spark-submit \
+	  --master spark://spark-master:7077 \
+	  --deploy-mode client \
+	  --executor-memory 2g \
+	  --driver-memory 1g \
+	  /opt/airflow/src/processing/clean.py
 
 run-features:
-	docker exec airflow-scheduler \
-	  /opt/spark/bin/spark-submit \
-	    --master spark://spark-master:7077 \
-	    --deploy-mode client \
-	    --executor-memory 2g \
-	    --driver-memory 1g \
-	    /opt/airflow/src/processing/feature_engineering.py
+	docker exec spark-master /opt/spark/bin/spark-submit \
+	  --master spark://spark-master:7077 \
+	  --deploy-mode client \
+	  --executor-memory 2g \
+	  --driver-memory 1g \
+	  /opt/airflow/src/processing/feature_engineering.py
 
 pipeline-m2:
 	docker exec airflow-webserver airflow dags trigger dag_spark_processing

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+from airflow.utils.dates import days_ago
 from airflow.operators.python import PythonOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
@@ -59,7 +60,7 @@ with DAG(
     default_args=default_args,
     description="Validate Synthea CSVs and load them into HDFS",
     schedule_interval=None,
-    start_date=datetime(2026, 1, 1),
+    start_date=days_ago(1),
     catchup=False,
     tags=["milestone-1", "ingestion", "hdfs"],
 ) as dag:
