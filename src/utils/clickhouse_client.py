@@ -1,32 +1,56 @@
 """
-clickhouse_client.py — Shared ClickHouse client factory.
-Replaces the Hive beeline / SSHOperator pattern from v4.
+Thin wrapper around clickhouse-connect.
+
+Usage
+-----
+    from utils.clickhouse_client import get_client, query_df
+
+    client = get_client()
+    df = query_df("SELECT * FROM healthcare.patients LIMIT 10")
 """
+
+from __future__ import annotations
+
+import os
+from functools import lru_cache
+
 import clickhouse_connect
-from src.utils.config import (
-    CLICKHOUSE_HOST, CLICKHOUSE_HTTP_PORT,
-    CLICKHOUSE_DB, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD,
-)
+from clickhouse_connect.driver.client import Client
 
 
-def get_client():
-    """Return a connected clickhouse_connect client."""
+def get_client() -> Client:
+    """
+    Return a clickhouse-connect Client configured from environment variables.
+
+    Environment variables (with defaults matching docker-compose / .env):
+        CLICKHOUSE_HOST       clickhouse
+        CLICKHOUSE_PORT       8123          ← HTTP interface (not 9000/9900)
+        CLICKHOUSE_USER       healthcare_user
+        CLICKHOUSE_PASSWORD   ch_secret_2026
+        CLICKHOUSE_DATABASE   healthcare
+    """
+    host = os.environ.get("CLICKHOUSE_HOST", "clickhouse")
+    port = int(os.environ.get("CLICKHOUSE_PORT", "8123"))
+    user = os.environ.get("CLICKHOUSE_USER", "healthcare_user")
+    password = os.environ.get("CLICKHOUSE_PASSWORD", "ch_secret_2026")
+    database = os.environ.get("CLICKHOUSE_DATABASE", "healthcare")
+
     return clickhouse_connect.get_client(
-        host=CLICKHOUSE_HOST,
-        port=CLICKHOUSE_HTTP_PORT,
-        database=CLICKHOUSE_DB,
-        username=CLICKHOUSE_USER,
-        password=CLICKHOUSE_PASSWORD,
+        host=host,
+        port=port,
+        username=user,
+        password=password,
+        database=database,
+        # Increase timeout for large INSERT batches
+        connect_timeout=30,
+        send_receive_timeout=300,
     )
 
 
-def query_df(sql: str):
-    """Execute a SELECT and return a pandas DataFrame."""
+def query_df(sql: str) -> "pd.DataFrame":
+    """
+    Execute a SELECT and return results as a pandas DataFrame.
+    Convenience wrapper used by notebooks and ad-hoc scripts.
+    """
     client = get_client()
     return client.query_df(sql)
-
-
-def execute(sql: str):
-    """Execute a non-SELECT statement (INSERT, CREATE, etc.)."""
-    client = get_client()
-    client.command(sql)

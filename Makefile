@@ -1,7 +1,7 @@
 .PHONY: up fix-airflow down restart logs ps verify \
         shell-namenode shell-clickhouse shell-airflow shell-spark \
-        generate-data init-hdfs load-hdfs clean-hdfs init_clickhouse load-clickhouse clean-clickhouse create-airflow-user \
-        init-everything pipeline clean
+        notebook generate-data init-hdfs load-hdfs clean-hdfs init-clickhouse load-clickhouse clean-clickhouse create-airflow-user \
+        init-everything pipeline clean run-clean run-features pipeline-m2 explore
 
 # ── Correct startup sequence ──────────────────────────────────────────────────
 # 1. postgres must be healthy before airflow-init runs
@@ -58,6 +58,10 @@ shell-airflow:
 shell-spark:
 	docker exec -it spark-master bash
 
+# ── Notebook ──────────────────────────────────────────────────────────────────
+
+notebook:
+	docker exec -it app jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root
 # ── Data ──────────────────────────────────────────────────────────────────────
 generate-data:
 	bash data/synthea/generate_data.sh
@@ -79,7 +83,7 @@ load-hdfs:
 clean-hdfs:
 	docker exec namenode sh -c "hdfs dfs -rm -r hdfs://namenode:9001/data/raw/*"	
 
-init_clickhouse:
+init-clickhouse:
 	docker exec -i clickhouse clickhouse-client --multiquery < docker/clickhouse/init/01_create_schema.sql
 
 load-clickhouse:
@@ -109,7 +113,31 @@ create-airflow-user:
 	  --role Admin --email admin@healthcare.local \
 	  --password admin_secret_2026 2>/dev/null || echo "User already exists"
 
-init-everything: init-hdfs init_clickhouse create-airflow-user	
+init-everything: init-hdfs init-clickhouse create-airflow-user	
+
+run-clean:
+	docker exec airflow-scheduler \
+	  /opt/spark/bin/spark-submit \
+	    --master spark://spark-master:7077 \
+	    --deploy-mode client \
+	    --executor-memory 2g \
+	    --driver-memory 1g \
+	    /opt/airflow/src/processing/clean.py
+
+run-features:
+	docker exec airflow-scheduler \
+	  /opt/spark/bin/spark-submit \
+	    --master spark://spark-master:7077 \
+	    --deploy-mode client \
+	    --executor-memory 2g \
+	    --driver-memory 1g \
+	    /opt/airflow/src/processing/feature_engineering.py
+
+pipeline-m2:
+	docker exec airflow-webserver airflow dags trigger dag_spark_processing
+
+explore:
+	jupyter notebook notebooks/01_data_exploration.ipynb
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 verify:
@@ -136,3 +164,5 @@ pipeline:
 clean:
 	docker compose down -v --remove-orphans
 	sudo rm -rf data/processed/* data/features/* data/clickhouse/* models/* logs/*
+
+

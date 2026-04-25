@@ -4,11 +4,12 @@
 CREATE DATABASE IF NOT EXISTS healthcare;
 
 -- Raw patients table (populated by Airflow ingestion DAG)
+DROP TABLE IF EXISTS healthcare.patients;
 CREATE TABLE IF NOT EXISTS healthcare.patients
 (
     patient_id      String,
-    birthdate       Date,
-    deathdate       Nullable(Date),
+    birthdate       Date32,
+    deathdate       Nullable(Date32),
     ssn             String,
     first           String,
     last            String,
@@ -27,10 +28,11 @@ ENGINE = MergeTree()
 ORDER BY patient_id;
 
 -- Conditions
+DROP TABLE IF EXISTS healthcare.conditions;
 CREATE TABLE IF NOT EXISTS healthcare.conditions
 (
-    start_date      Date,
-    stop_date       Nullable(Date),
+    start_date      Date32,
+    stop_date       Nullable(Date32),
     patient_id      String,
     encounter_id    String,
     code            String,
@@ -40,10 +42,11 @@ ENGINE = MergeTree()
 ORDER BY (patient_id, start_date);
 
 -- Medications
+DROP TABLE IF EXISTS healthcare.medications;
 CREATE TABLE IF NOT EXISTS healthcare.medications
 (
-    start_date      Date,
-    stop_date       Nullable(Date),
+    start_date      Date32,
+    stop_date       Nullable(Date32),
     patient_id      String,
     encounter_id    String,
     code            String,
@@ -55,11 +58,12 @@ ENGINE = MergeTree()
 ORDER BY (patient_id, start_date);
 
 -- Observations
+DROP TABLE IF EXISTS healthcare.observations;
 CREATE TABLE IF NOT EXISTS healthcare.observations
 (
-    date            DateTime,
+    date            DateTime64(3),
     patient_id      String,
-    encounter_id    String,
+    encounter_id    Nullable(String),
     code            String,
     description     String,
     value           String,
@@ -70,11 +74,12 @@ ENGINE = MergeTree()
 ORDER BY (patient_id, date);
 
 -- Encounters
+DROP TABLE IF EXISTS healthcare.encounters;
 CREATE TABLE IF NOT EXISTS healthcare.encounters
 (
     encounter_id    String,
-    start_dt        DateTime,
-    stop_dt         Nullable(DateTime),
+    start_dt        DateTime64(3),
+    stop_dt         Nullable(DateTime64(3)),
     patient_id      String,
     encounterclass  String,
     code            String,
@@ -89,9 +94,10 @@ ENGINE = MergeTree()
 ORDER BY (patient_id, encounter_id);
 
 -- Procedures
+DROP TABLE IF EXISTS healthcare.procedures;
 CREATE TABLE IF NOT EXISTS healthcare.procedures
 (
-    date            Date,
+    date            Date32,
     patient_id      String,
     encounter_id    String,
     code            String,
@@ -104,6 +110,7 @@ ENGINE = MergeTree()
 ORDER BY (patient_id, date);
 
 -- ML feature store — written by Spark, queried for model serving
+DROP TABLE IF EXISTS healthcare.patient_features;
 CREATE TABLE IF NOT EXISTS healthcare.patient_features
 (
     patient_id              String,
@@ -121,12 +128,13 @@ CREATE TABLE IF NOT EXISTS healthcare.patient_features
     condition_vector        Array(Float32),
     medication_history_flags Array(UInt8),
     feature_version         String,
-    created_at              DateTime DEFAULT now()
+    created_at              DateTime64(3) DEFAULT now()
 )
 ENGINE = MergeTree()
 ORDER BY patient_id;
 
 -- Recommendations output table
+DROP TABLE IF EXISTS healthcare.recommendations;
 CREATE TABLE IF NOT EXISTS healthcare.recommendations
 (
     recommendation_id   UUID DEFAULT generateUUIDv4(),
@@ -137,7 +145,7 @@ CREATE TABLE IF NOT EXISTS healthcare.recommendations
     treatment_name      String,
     score               Float64,
     explanation         String,
-    created_at          DateTime DEFAULT now()
+    created_at          DateTime64(3) DEFAULT now()
 )
 ENGINE = MergeTree()
 ORDER BY (patient_id, created_at);

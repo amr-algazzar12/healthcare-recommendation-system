@@ -4,6 +4,7 @@ x-airflow-common: &airflow-common
   env_file: .env
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: "Africa/Cairo"
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_secret_2026@postgres:5432/airflow
     AIRFLOW__CORE__FERNET_KEY: 46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nfdW0M=
     AIRFLOW__WEBSERVER__SECRET_KEY: healthcare_webserver_secret_2026
@@ -13,7 +14,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     PYTHONPATH: /opt/airflow/src
     CLICKHOUSE_HOST: clickhouse
-    CLICKHOUSE_HTTP_PORT: "8123"
+    CLICKHOUSE_PORT: "8123"
     CLICKHOUSE_DB: healthcare
     CLICKHOUSE_USER: healthcare_user
     CLICKHOUSE_PASSWORD: ch_secret_2026
@@ -27,12 +28,14 @@ x-airflow-common: &airflow-common
     _AIRFLOW_WWW_USER_LASTNAME: Admin
     _AIRFLOW_WWW_USER_EMAIL: admin@healthcare.local
     _AIRFLOW_WWW_USER_ROLE: Admin
+    _PIP_ADDITIONAL_REQUIREMENTS: "clickhouse-connect>=0.7.0 pandas>=2.0.0"
   volumes:
     - ./dags:/opt/airflow/dags
     - ./src:/opt/airflow/src
     - ./data:/opt/airflow/data
     - ./models:/opt/airflow/models
     - ./logs/airflow:/opt/airflow/logs
+    - ./scripts:/opt/airflow/scripts
     - mlflow_artifacts:/mlflow/artifacts
   user: "50000:0"
   networks:
@@ -280,6 +283,7 @@ services:
       start_period: 60s
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./logs/airflow:/opt/airflow/logs
     depends_on:
       postgres:
         condition: service_healthy
@@ -335,13 +339,16 @@ services:
       - CLICKHOUSE_PASSWORD=ch_secret_2026
       - MLFLOW_TRACKING_URI=http://mlflow:5001
       - FLASK_ENV=development
+      - NAMENODE_HOST=namenode
     volumes:
       - ./src:/app/src
       - ./models:/app/models
+      - ./notebooks:/opt/airflow/notebooks
       - mlflow_artifacts:/mlflow/artifacts
     ports:
       - "5050:5050"
       - "8501:8501"
+      - "8888:8888"
     depends_on:
       clickhouse:
         condition: service_healthy

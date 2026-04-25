@@ -90,7 +90,7 @@ Then open Airflow at **http://localhost:8081**, enable `dag_ingest_to_hdfs`, and
 | Airflow    | admin                  | admin_secret_2026    |
 | ClickHouse | healthcare_user        | ch_secret_2026       |
 | PostgreSQL | airflow                | airflow_secret_2026  |
-| pgAdmin    | admin@healthcare.local | pgadmin_secret_2026  |
+| pgAdmin    | admin@healthcare.com   | pgadmin_secret_2026  |
 
 ---
 
@@ -123,7 +123,7 @@ healthcare-recommendation-system/
 │   ├── clickhouse/
 │   │   ├── config.xml
 │   │   ├── users.xml
-│   │   └── init/01_create_schema.sql
+│   │   └── init/01_create_schema.sql     
 │   ├── mlflow/Dockerfile
 │   └── app/Dockerfile
 │

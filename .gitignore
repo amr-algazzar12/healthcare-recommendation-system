@@ -1,4 +1,5 @@
 # .env
+env
 data/raw/
 data/processed/
 data/features/
