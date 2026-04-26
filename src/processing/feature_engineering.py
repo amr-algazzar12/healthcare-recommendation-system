@@ -50,7 +50,7 @@ CORONARY_CODES       = {"53741008", "414545008", "22298006"}
 TOP_N_CONDITIONS = 50
 
 # ── Top-N medication codes for history flags array ────────────────────────
-TOP_N_MEDICATIONS = 30
+TOP_N_MEDICATIONS = 50
 
 
 def get_spark() -> SparkSession:
@@ -161,12 +161,11 @@ def build_condition_features(
         .collect()
     )
 
-    # Build a UDF that converts a patient's code set → fixed-length Float32 array
-    top_codes_bc = conditions.sparkSession.sparkContext.broadcast(top_codes)
+    n_conds = len(top_codes)
+    _cond_vocab = list(top_codes)
 
     @F.udf(ArrayType(FloatType()))
-    def make_condition_vector(patient_code_set):
-        vocab = top_codes_bc.value
+    def make_condition_vector(patient_code_set, vocab=_cond_vocab):
         if patient_code_set is None:
             return [0.0] * len(vocab)
         code_set = set(patient_code_set)
@@ -180,19 +179,21 @@ def build_condition_features(
     result = patients_ids.join(agg_df, on="patient_id", how="left")
 
     # Fill nulls for patients with no conditions at all
-    zero_vector = [0.0] * TOP_N_CONDITIONS
     result = result.fillna(
         {
-            "num_conditions":     0,
-            "has_diabetes":       0,
-            "has_hypertension":   0,
-            "has_asthma":         0,
-            "has_hyperlipidemia": 0,
+            "num_conditions":       0,
+            "has_diabetes":         0,
+            "has_hypertension":     0,
+            "has_asthma":           0,
+            "has_hyperlipidemia":   0,
             "has_coronary_disease": 0,
         }
     ).withColumn(
         "condition_vector",
-        F.coalesce(F.col("condition_vector"), F.array(*[F.lit(0.0)] * TOP_N_CONDITIONS))
+        F.coalesce(
+            F.col("condition_vector"),
+            F.array(*[F.lit(0.0).cast(FloatType())] * n_conds)
+        )
     )
 
     return result
@@ -229,11 +230,11 @@ def build_medication_features(
         .collect()
     )
 
-    top_med_bc = medications.sparkSession.sparkContext.broadcast(top_med_codes)
+    n_meds = len(top_med_codes)
+    _med_vocab = list(top_med_codes)
 
     @F.udf(ArrayType(ByteType()))
-    def make_med_flags(med_code_set):
-        vocab = top_med_bc.value
+    def make_med_flags(med_code_set, vocab=_med_vocab):
         if med_code_set is None:
             return [0] * len(vocab)
         code_set = set(med_code_set)
@@ -249,7 +250,7 @@ def build_medication_features(
         "medication_history_flags",
         F.coalesce(
             F.col("medication_history_flags"),
-            F.array(*[F.lit(0).cast(ByteType())] * TOP_N_MEDICATIONS)
+            F.array(*[F.lit(0).cast(ByteType())] * n_meds)
         )
     )
 
@@ -299,14 +300,13 @@ def build_patient_features(spark: SparkSession) -> DataFrame:
     enc    = build_encounter_features(encounters, patient_ids)               # patient_id, num_encounters
 
     # ── join on patient_id ────────────────────────────────────────────────
+    # Use string key (not column reference) so Spark deduplicates patient_id
+    # automatically — no ambiguous column errors.
     features = (
         demo
-        .join(cond.drop("patient_id"), demo.patient_id == cond.patient_id, how="left")
-        .drop(cond.patient_id)
-        .join(meds.drop("patient_id"), demo.patient_id == meds.patient_id, how="left")
-        .drop(meds.patient_id)
-        .join(enc.drop("patient_id"),  demo.patient_id == enc.patient_id,  how="left")
-        .drop(enc.patient_id)
+        .join(cond,  on="patient_id", how="left")
+        .join(meds,  on="patient_id", how="left")
+        .join(enc,   on="patient_id", how="left")
     )
 
     # ── add metadata columns ──────────────────────────────────────────────
