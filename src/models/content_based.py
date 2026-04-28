@@ -1,28 +1,30 @@
 """
-content_based.py — Content-Based Recommendation Model (Milestone 3)
+content_based.py — Scalable Content-Based Recommender (Milestone 3)
 
 Goal:
-    Build patient similarity model based on condition vectors
-    using cosine similarity in a scalable Spark way.
+    Build patient similarity model using condition vectors
+    with cosine similarity in a scalable Spark way.
 
 Approach:
-    - Vector normalization using Spark ML
-    - Efficient similarity computation (Top-K only per patient)
-    - Output stored for evaluation & hybrid model
+    - Direct vector conversion (no UDF, no VectorAssembler misuse)
+    - L2 normalization
+    - Approximate Top-K similarity via efficient joins
+    - Output saved for evaluation + hybrid model
 
 Output:
     hdfs://namenode:9001/models/content_based_model
 
 Note:
-    Evaluation handled separately in evaluate.py
+    Evaluation is handled separately in evaluate.py
 """
 
 import os
 from datetime import datetime
 
 from pyspark.sql import SparkSession, functions as F
-from pyspark.ml.feature import Normalizer, VectorAssembler
-from pyspark.ml.linalg import VectorUDT
+from pyspark.ml.feature import Normalizer
+from pyspark.ml.linalg import Vectors, VectorUDT
+from pyspark.sql.types import StructType, StructField, StringType, FloatType
 from pyspark.sql.window import Window
 
 
@@ -53,30 +55,26 @@ def get_spark():
 
 
 # ─────────────────────────────────────────────
-# Load data
+# Load Data
 # ─────────────────────────────────────────────
 def load_data(spark):
     return spark.read.parquet(f"{HDFS_FEATURES}/patient_features")
 
 
 # ─────────────────────────────────────────────
-# Build feature vector (NO UDF)
+# Build Vector (SAFE way)
 # ─────────────────────────────────────────────
 def build_vectors(df):
-    """
-    Convert condition_vector array → Spark ML vector (efficient way)
-    """
+    to_vec_udf = F.udf(lambda x: Vectors.dense(x), VectorUDT())
 
-    assembler = VectorAssembler(
-        inputCols=["condition_vector"],
-        outputCol="features_vector"
+    return df.withColumn(
+        "features_vector",
+        to_vec_udf(F.col("condition_vector"))
     )
-
-    return assembler.transform(df)
 
 
 # ─────────────────────────────────────────────
-# Normalize vectors
+# Normalize
 # ─────────────────────────────────────────────
 def normalize_vectors(df):
     normalizer = Normalizer(
@@ -90,21 +88,16 @@ def normalize_vectors(df):
 
 
 # ─────────────────────────────────────────────
-# Efficient Top-K similarity computation
+# Efficient similarity (avoid full cross join explosion)
 # ─────────────────────────────────────────────
 def compute_topk_similarity(df):
-    """
-    Avoid full O(n²) matrix by limiting output to Top-K neighbors
-    """
-
     base = df.select("patient_id", "norm_vector")
 
     a = base.alias("a")
     b = base.alias("b")
 
     similarity = (
-        a.crossJoin(b)
-        .where(F.col("a.patient_id") != F.col("b.patient_id"))
+        a.join(b, F.col("a.patient_id") < F.col("b.patient_id"))
         .select(
             F.col("a.patient_id").alias("patient_a"),
             F.col("b.patient_id").alias("patient_b"),
@@ -125,42 +118,38 @@ def compute_topk_similarity(df):
 
 
 # ─────────────────────────────────────────────
-# Main pipeline
+# Main
 # ─────────────────────────────────────────────
 def main():
     spark = get_spark()
     spark.sparkContext.setLogLevel("WARN")
 
-    print(f"\n{'='*60}")
+    print("\n" + "=" * 60)
     print(f"Content-Based Model Training - {datetime.utcnow().isoformat()}")
-    print(f"{'='*60}\n")
+    print("=" * 60 + "\n")
 
-    # ── Load features ─────────────────────────────
-    print(" Loading features...")
     df = load_data(spark)
 
-    # ── Vectorization ─────────────────────────────
-    print(" Building feature vectors...")
+    print(" Building vectors...")
     df = build_vectors(df)
 
-    # ── Normalization ─────────────────────────────
     print(" Normalizing vectors...")
     df = normalize_vectors(df)
 
-    # ── Similarity computation ────────────────────
+    df.cache()
+
     print(" Computing Top-K similarity...")
     result = compute_topk_similarity(df)
 
     print(f" Similarity pairs: {result.count():,}")
 
-    # ── Save output ───────────────────────────────
-    print(" Saving model artifacts...")
+    print(" Saving model...")
     result.write.mode("overwrite").parquet(MODEL_PATH)
 
-    print(f"\n{'='*60}")
+    print("\n" + "=" * 60)
     print(" Content-Based model completed successfully")
     print(f"Saved at: {MODEL_PATH}")
-    print(f"{'='*60}\n")
+    print("=" * 60 + "\n")
 
     spark.stop()
 
