@@ -6,9 +6,9 @@ Purpose:
 
 Output:
     - ALS Model → hdfs://namenode:9001/models/als_model
-    - Indexers → hdfs://namenode:9001/models/als_indexers
+    - Indexer Pipeline → hdfs://namenode:9001/models/als_indexers
 
-NOTE:
+Note:
     Evaluation is handled separately in evaluate.py
 """
 
@@ -20,14 +20,15 @@ from pyspark.ml.feature import StringIndexer
 from pyspark.ml.recommendation import ALS
 from pyspark.ml import Pipeline
 
+
 # ─────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────
 HDFS_PROCESSED = "hdfs://namenode:9001/data/processed"
 HDFS_MODELS    = "hdfs://namenode:9001/models"
 
-ALS_MODEL_PATH     = f"{HDFS_MODELS}/als_model"
-ALS_INDEXERS_PATH  = f"{HDFS_MODELS}/als_indexers"
+ALS_MODEL_PATH    = f"{HDFS_MODELS}/als_model"
+ALS_INDEXERS_PATH = f"{HDFS_MODELS}/als_indexers"
 
 SPARK_MASTER = os.environ.get("SPARK_MASTER", "spark://spark-master:7077")
 
@@ -46,13 +47,13 @@ def get_spark():
 
 
 # ─────────────────────────────────────────────
-# Build interactions
+# Build implicit interactions
 # ─────────────────────────────────────────────
 def build_interactions(medications):
     return (
         medications
         .select(
-            "patient_id",
+            F.col("patient_id"),
             F.col("code").alias("medication_id")
         )
         .dropDuplicates()
@@ -61,7 +62,7 @@ def build_interactions(medications):
 
 
 # ─────────────────────────────────────────────
-# ALS Training
+# Train ALS model
 # ─────────────────────────────────────────────
 def train_als(train_df):
     als = ALS(
@@ -80,7 +81,7 @@ def train_als(train_df):
 
 
 # ─────────────────────────────────────────────
-# Main pipeline 
+# Main pipeline
 # ─────────────────────────────────────────────
 def main():
     spark = get_spark()
@@ -94,38 +95,32 @@ def main():
     medications = spark.read.parquet(f"{HDFS_PROCESSED}/medications")
 
     interactions = build_interactions(medications)
-    print(f"✔ Interactions: {interactions.count():,}")
+
+    print(f" Interactions: {interactions.count():,}")
 
     # ─────────────────────────────────────────
-    # proper indexing using Pipeline
+    # Indexing pipeline (users + items)
     # ─────────────────────────────────────────
-    user_indexer = StringIndexer(
-        inputCol="patient_id",
-        outputCol="user_idx",
-        handleInvalid="skip"
-    )
-
-    item_indexer = StringIndexer(
-        inputCol="medication_id",
-        outputCol="item_idx",
-        handleInvalid="skip"
-    )
-
-    pipeline = Pipeline(stages=[user_indexer, item_indexer])
+    indexer = Pipeline(stages=[
+        StringIndexer(
+            inputCol="patient_id",
+            outputCol="user_idx",
+            handleInvalid="skip"
+        ),
+        StringIndexer(
+            inputCol="medication_id",
+            outputCol="item_idx",
+            handleInvalid="skip"
+        )
+    ])
 
     print(" Fitting indexers...")
-    indexer_model = pipeline.fit(interactions)
+    indexer_model = indexer.fit(interactions)
     indexed_data = indexer_model.transform(interactions)
-
-    # ── Train/Test split (IMPORTANT for future evaluation)
-    train_df, test_df = indexed_data.randomSplit([0.8, 0.2], seed=42)
-
-    print(f" Train size: {train_df.count():,}")
-    print(f" Test size:  {test_df.count():,}")
 
     # ── Train ALS ─────────────────────────────
     print(" Training ALS model...")
-    als_model = train_als(train_df)
+    als_model = train_als(indexed_data)
 
     # ── Save model ────────────────────────────
     print(" Saving ALS model...")
