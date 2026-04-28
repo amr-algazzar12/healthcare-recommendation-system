@@ -1,30 +1,30 @@
 """
 content_based.py — Content-Based Recommendation Model (Milestone 3)
 
-Idea:
-    Recommend based on similarity between patients using condition vectors.
+Goal:
+    Build patient similarity model based on condition vectors
+    using cosine similarity in a scalable Spark way.
 
 Approach:
-    Cosine Similarity on condition_vector from feature engineering.
+    - Vector normalization using Spark ML
+    - Efficient similarity computation (Top-K only per patient)
+    - Output stored for evaluation & hybrid model
 
 Output:
-    - Similarity matrix (or nearest neighbors model)
-    - Saved model artifacts in HDFS
+    hdfs://namenode:9001/models/content_based_model
 
-NOTE:
-    Evaluation is handled separately in evaluate.py
+Note:
+    Evaluation handled separately in evaluate.py
 """
 
 import os
 from datetime import datetime
 
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
+from pyspark.sql import SparkSession, functions as F
+from pyspark.ml.feature import Normalizer, VectorAssembler
+from pyspark.ml.linalg import VectorUDT
+from pyspark.sql.window import Window
 
-from pyspark.ml.feature import Normalizer
-from pyspark.ml.linalg import Vectors, VectorUDT
-
-from pyspark.sql.types import FloatType
 
 # ─────────────────────────────────────────────
 # Paths
@@ -35,6 +35,8 @@ HDFS_MODELS   = "hdfs://namenode:9001/models"
 MODEL_PATH = f"{HDFS_MODELS}/content_based_model"
 
 SPARK_MASTER = os.environ.get("SPARK_MASTER", "spark://spark-master:7077")
+
+TOP_K = 50
 
 
 # ─────────────────────────────────────────────
@@ -51,35 +53,30 @@ def get_spark():
 
 
 # ─────────────────────────────────────────────
-# Load feature data
+# Load data
 # ─────────────────────────────────────────────
 def load_data(spark):
     return spark.read.parquet(f"{HDFS_FEATURES}/patient_features")
 
 
 # ─────────────────────────────────────────────
-# Prepare vectors for cosine similarity
+# Build feature vector (NO UDF)
 # ─────────────────────────────────────────────
-def prepare_vectors(df):
+def build_vectors(df):
     """
-    Convert condition_vector array → Spark vector
+    Convert condition_vector array → Spark ML vector (efficient way)
     """
 
-    def to_vector(arr):
-        return Vectors.dense(arr)
-
-    to_vector_udf = F.udf(to_vector, VectorUDT())
-
-    df = df.withColumn(
-        "features_vector",
-        to_vector_udf(F.col("condition_vector"))
+    assembler = VectorAssembler(
+        inputCols=["condition_vector"],
+        outputCol="features_vector"
     )
 
-    return df
+    return assembler.transform(df)
 
 
 # ─────────────────────────────────────────────
-# Normalize vectors (for cosine similarity)
+# Normalize vectors
 # ─────────────────────────────────────────────
 def normalize_vectors(df):
     normalizer = Normalizer(
@@ -89,38 +86,46 @@ def normalize_vectors(df):
     )
 
     model = normalizer.fit(df)
-    df = model.transform(df)
-
-    return df
+    return model.transform(df)
 
 
 # ─────────────────────────────────────────────
-# Build similarity model (self-join approach)
+# Efficient Top-K similarity computation
 # ─────────────────────────────────────────────
-def compute_similarity(df):
+def compute_topk_similarity(df):
     """
-    Compute cosine similarity between patients
+    Avoid full O(n²) matrix by limiting output to Top-K neighbors
     """
 
-    df1 = df.select("patient_id", "norm_vector")
-    df2 = df.select("patient_id", "norm_vector")
+    base = df.select("patient_id", "norm_vector")
+
+    a = base.alias("a")
+    b = base.alias("b")
 
     similarity = (
-        df1.alias("a")
-        .join(df2.alias("b"))
+        a.crossJoin(b)
         .where(F.col("a.patient_id") != F.col("b.patient_id"))
         .select(
             F.col("a.patient_id").alias("patient_a"),
             F.col("b.patient_id").alias("patient_b"),
-            F.expr("dot(a.norm_vector, b.norm_vector)").alias("cosine_similarity")
+            F.expr("dot(a.norm_vector, b.norm_vector)").alias("similarity")
         )
     )
 
-    return similarity
+    window = Window.partitionBy("patient_a").orderBy(F.col("similarity").desc())
+
+    topk = (
+        similarity
+        .withColumn("rank", F.row_number().over(window))
+        .filter(F.col("rank") <= TOP_K)
+        .drop("rank")
+    )
+
+    return topk
 
 
 # ─────────────────────────────────────────────
-# Main
+# Main pipeline
 # ─────────────────────────────────────────────
 def main():
     spark = get_spark()
@@ -131,29 +136,29 @@ def main():
     print(f"{'='*60}\n")
 
     # ── Load features ─────────────────────────────
-    print("✔ Loading patient features...")
+    print(" Loading features...")
     df = load_data(spark)
 
-    # ── Prepare vectors ───────────────────────────
-    print("✔ Building vectors...")
-    df = prepare_vectors(df)
+    # ── Vectorization ─────────────────────────────
+    print(" Building feature vectors...")
+    df = build_vectors(df)
 
-    # ── Normalize ─────────────────────────────────
-    print("✔ Normalizing vectors...")
+    # ── Normalization ─────────────────────────────
+    print(" Normalizing vectors...")
     df = normalize_vectors(df)
 
-    # ── Compute similarity ────────────────────────
-    print("✔ Computing cosine similarity...")
-    similarity_df = compute_similarity(df)
+    # ── Similarity computation ────────────────────
+    print(" Computing Top-K similarity...")
+    result = compute_topk_similarity(df)
 
-    print(f"Similarity rows: {similarity_df.count():,}")
+    print(f" Similarity pairs: {result.count():,}")
 
-    # ── Save model ────────────────────────────────
-    print("✔ Saving content-based model...")
-    similarity_df.write.mode("overwrite").parquet(MODEL_PATH)
+    # ── Save output ───────────────────────────────
+    print(" Saving model artifacts...")
+    result.write.mode("overwrite").parquet(MODEL_PATH)
 
     print(f"\n{'='*60}")
-    print("✔ Content-Based model completed successfully")
+    print(" Content-Based model completed successfully")
     print(f"Saved at: {MODEL_PATH}")
     print(f"{'='*60}\n")
 
