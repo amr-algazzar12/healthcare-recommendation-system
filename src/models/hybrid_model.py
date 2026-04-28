@@ -1,17 +1,8 @@
 """
-hybrid_model.py — Hybrid Recommendation Model (Milestone 3)
-
-Design:
-    Two independent models:
-        - Random Forest (Spark MLlib)
-        - XGBoost (controlled Pandas batch training)
+hybrid_model.py — Hybrid Model (RF + XGBoost)
 
 Goal:
-    Learn patient risk propensity WITHOUT data leakage
-
-IMPORTANT:
-    - No evaluation here (handled in evaluate.py)
-    - Fully reproducible pipeline
+    Predict patient risk propensity (binary classification)
 """
 
 import os
@@ -25,9 +16,6 @@ import pandas as pd
 import xgboost as xgb
 
 
-# ─────────────────────────────────────────────
-# Paths
-# ─────────────────────────────────────────────
 HDFS_FEATURES = "hdfs://namenode:9001/data/features"
 HDFS_MODELS   = "hdfs://namenode:9001/models"
 
@@ -39,72 +27,44 @@ SPARK_MASTER = os.environ.get("SPARK_MASTER", "spark://spark-master:7077")
 SEED = 42
 
 
-# ─────────────────────────────────────────────
-# Spark Session
-# ─────────────────────────────────────────────
 def get_spark():
     return (
         SparkSession.builder
-        .appName("Hybrid-Recommender")
+        .appName("Hybrid")
         .master(SPARK_MASTER)
         .config("spark.sql.shuffle.partitions", "8")
-        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
         .getOrCreate()
     )
 
 
-# ─────────────────────────────────────────────
-# Load Data
-# ─────────────────────────────────────────────
-def load_data(spark):
-    return spark.read.parquet(f"{HDFS_FEATURES}/patient_features")
-
-
-# ─────────────────────────────────────────────
-# Feature Engineering (NO leakage target)
-# ─────────────────────────────────────────────
 def build_features(df):
-    feature_cols = [
-        "age",
-        "gender_encoded",
-        "race_encoded",
-        "num_conditions",
-        "num_medications",
-        "num_encounters",
-        "has_diabetes",
-        "has_hypertension",
-        "has_asthma",
-        "has_hyperlipidemia",
-        "has_coronary_disease"
+    cols = [
+        "age", "gender_encoded", "race_encoded",
+        "num_conditions", "num_medications", "num_encounters",
+        "has_diabetes", "has_hypertension",
+        "has_asthma", "has_hyperlipidemia", "has_coronary_disease"
     ]
 
-    assembler = VectorAssembler(
-        inputCols=feature_cols,
-        outputCol="features"
-    )
+    df = VectorAssembler(inputCols=cols, outputCol="features").transform(df)
 
-    df = assembler.transform(df)
-
-    # SAFE proxy label (based on utilization only → avoids direct leakage)
     df = df.withColumn(
         "label",
-        (F.col("num_encounters") > F.lit(4)).cast("int")
+        (F.col("num_encounters") > 4).cast("int")
     )
 
     return df.select("features", "label")
 
 
-# ─────────────────────────────────────────────
-# Train/Test Split
-# ─────────────────────────────────────────────
-def split_data(df):
-    return df.randomSplit([0.8, 0.2], seed=SEED)
+def main():
+    spark = get_spark()
+    spark.sparkContext.setLogLevel("WARN")
 
+    df = spark.read.parquet(f"{HDFS_FEATURES}/patient_features")
 
-# ─────────────────────────────────────────────
-# Random Forest Model (Spark)
-# ─────────────────────────────────────────────
-def train_rf(train_df):
+    df = build_features(df)
+
+    train = df.randomSplit([0.8, 0.2], seed=SEED)[0]
+
     rf = RandomForestClassifier(
         featuresCol="features",
         labelCol="label",
@@ -113,87 +73,27 @@ def train_rf(train_df):
         seed=SEED
     )
 
-    return rf.fit(train_df)
+    rf_model = rf.fit(train)
+    rf_model.write().overwrite().save(RF_MODEL_PATH)
 
-
-# ─────────────────────────────────────────────
-# Safe XGBoost Training (bounded conversion)
-# ─────────────────────────────────────────────
-def train_xgboost(train_df):
-    """
-    Safe conversion:
-    - limit size
-    - avoid full cluster crash
-    """
-
-    # sample if dataset is large (safety layer)
-    sampled_df = train_df.sample(False, 0.5, seed=SEED)
-
-    pdf = sampled_df.toPandas()
-
+    pdf = train.toPandas()
     X = pd.DataFrame(pdf["features"].tolist())
     y = pdf["label"]
 
-    model = xgb.XGBClassifier(
+    xgb_model = xgb.XGBClassifier(
         n_estimators=150,
         max_depth=6,
         learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        objective="binary:logistic",
-        eval_metric="logloss",
         tree_method="hist",
-        random_state=SEED
+        eval_metric="logloss"
     )
 
-    model.fit(X, y)
+    xgb_model.fit(X, y)
+    xgb_model.save_model("/tmp/xgb.json")
 
-    return model
+    os.system(f"hdfs dfs -put -f /tmp/xgb.json {XGB_MODEL_PATH}")
 
-
-# ─────────────────────────────────────────────
-# Main Pipeline
-# ─────────────────────────────────────────────
-def main():
-    spark = get_spark()
-    spark.sparkContext.setLogLevel("WARN")
-
-    print("\n" + "=" * 60)
-    print(f"Hybrid Model Training - {datetime.utcnow().isoformat()}")
-    print("=" * 60 + "\n")
-
-    # Load
-    df = load_data(spark)
-
-    # Features
-    df = build_features(df)
-
-    # Split
-    train_df, test_df = split_data(df)
-
-    train_df.cache()
-
-    print(f"Train size: {train_df.count():,}")
-    print(f"Test size: {test_df.count():,}")
-
-    # ── Random Forest ─────────────────────────
-    print(" Training Random Forest...")
-    rf_model = train_rf(train_df)
-
-    rf_model.write().overwrite().save(RF_MODEL_PATH)
-
-    # ── XGBoost ───────────────────────────────
-    print(" Training XGBoost...")
-    xgb_model = train_xgboost(train_df)
-
-    xgb_model.save_model("/tmp/xgb_model.json")
-    os.system(f"hdfs dfs -put -f /tmp/xgb_model.json {XGB_MODEL_PATH}")
-
-    print("\n" + "=" * 60)
-    print(" Hybrid models trained successfully")
-    print(f"Random Forest → {RF_MODEL_PATH}")
-    print(f"XGBoost → {XGB_MODEL_PATH}")
-    print("=" * 60 + "\n")
+    print("Hybrid Models Saved")
 
     spark.stop()
 
