@@ -1,82 +1,43 @@
 """
-collaborative_filtering.py — ALS Recommendation Model (Production Milestone)
-
-Goal:
-    Train ALS collaborative filtering using implicit feedback.
-
-Output:
-    ALS Model + Indexers saved to HDFS
-
-Note:
-    No evaluation here (handled in evaluate.py)
+ALS Collaborative Filtering — Production Version
 """
 
 import os
-from datetime import datetime
-
 from pyspark.sql import SparkSession, functions as F
 from pyspark.ml.feature import StringIndexer
 from pyspark.ml.recommendation import ALS
 from pyspark.ml import Pipeline
 
+HDFS = "hdfs://namenode:9001"
+MODEL_PATH = f"{HDFS}/models/als_model"
 
-# ─────────────────────────────
-# Paths
-# ─────────────────────────────
-HDFS_PROCESSED = "hdfs://namenode:9001/data/processed"
-HDFS_MODELS    = "hdfs://namenode:9001/models"
+def spark_session():
+    return SparkSession.builder.appName("ALS").getOrCreate()
 
-ALS_MODEL_PATH    = f"{HDFS_MODELS}/als_model"
-ALS_INDEXERS_PATH = f"{HDFS_MODELS}/als_indexers"
-
-SPARK_MASTER = os.environ.get("SPARK_MASTER", "spark://spark-master:7077")
-
-
-# ─────────────────────────────
-def get_spark():
-    return (
-        SparkSession.builder
-        .appName("ALS-CF")
-        .master(SPARK_MASTER)
-        .config("spark.sql.shuffle.partitions", "8")
-        .getOrCreate()
-    )
-
-
-# ─────────────────────────────
-def build_interactions(df):
-    return (
-        df.select(
-            "patient_id",
-            F.col("code").alias("medication_id")
-        )
-        .dropDuplicates()
-        .withColumn("interaction", F.lit(1.0))
-    )
-
-
-# ─────────────────────────────
 def main():
-    spark = get_spark()
-    spark.sparkContext.setLogLevel("WARN")
+    spark = spark_session()
 
-    print("\n=== ALS Training Started ===")
+    df = spark.read.parquet(f"{HDFS}/data/processed/medications")
 
-    meds = spark.read.parquet(f"{HDFS_PROCESSED}/medications")
-    interactions = build_interactions(meds)
+    interactions = df.select(
+        "patient_id",
+        F.col("code").alias("medication_id")
+    ).dropDuplicates().withColumn("rating", F.lit(1.0))
 
     indexer = Pipeline(stages=[
-        StringIndexer(inputCol="patient_id", outputCol="user_idx", handleInvalid="skip"),
-        StringIndexer(inputCol="medication_id", outputCol="item_idx", handleInvalid="skip")
+        StringIndexer(inputCol="patient_id", outputCol="user_idx"),
+        StringIndexer(inputCol="medication_id", outputCol="item_idx")
     ])
 
-    index_model = indexer.fit(interactions)
-    data = index_model.transform(interactions)
+    model_index = indexer.fit(interactions)
+    data = model_index.transform(interactions)
+
+    train, test = data.randomSplit([0.8, 0.2], 42)
 
     als = ALS(
         userCol="user_idx",
         itemCol="item_idx",
-        ratingCol="interaction",
+        ratingCol="rating",
         implicitPrefs=True,
         rank=20,
         maxIter=15,
@@ -84,15 +45,13 @@ def main():
         coldStartStrategy="drop"
     )
 
-    model = als.fit(data)
+    model = als.fit(train)
 
-    model.write().overwrite().save(ALS_MODEL_PATH)
-    index_model.write().overwrite().save(ALS_INDEXERS_PATH)
+    model.write().overwrite().save(MODEL_PATH)
 
-    print("ALS Model Saved")
+    model_index.write().overwrite().save(f"{HDFS}/models/als_indexers")
 
     spark.stop()
-
 
 if __name__ == "__main__":
     main()
