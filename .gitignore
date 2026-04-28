@@ -5,7 +5,6 @@ data/processed/
 data/features/
 data/clickhouse/
 data/synthea/synthea-with-dependencies.jar
-models/
 mlflow/artifacts/
 logs/
 __pycache__/
