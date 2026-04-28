@@ -28,7 +28,7 @@ x-airflow-common: &airflow-common
     _AIRFLOW_WWW_USER_LASTNAME: Admin
     _AIRFLOW_WWW_USER_EMAIL: admin@healthcare.local
     _AIRFLOW_WWW_USER_ROLE: Admin
-    _PIP_ADDITIONAL_REQUIREMENTS: "clickhouse-connect>=0.7.0 pandas>=2.0.0"
+    _PIP_ADDITIONAL_REQUIREMENTS: "clickhouse-connect>=0.7.0 pandas>=2.0.0 hdfs"
   volumes:
     - ./dags:/opt/airflow/dags
     - ./src:/opt/airflow/src
@@ -213,6 +213,7 @@ services:
       - SPARK_NO_DAEMONIZE=true
       - SPARK_MASTER_HOST=spark-master
       - SPARK_MASTER_PORT=7077
+      - SPARK_MASTER_OPTS=-Dspark.master.rest.enabled=true
       - SPARK_MASTER_WEBUI_PORT=8080
     entrypoint: ["/opt/spark/sbin/start-master.sh"]
     volumes:
@@ -236,6 +237,7 @@ services:
       - SPARK_WORKER_MEMORY=4g
       - SPARK_WORKER_CORES=4
       - SPARK_WORKER_WEBUI_PORT=8081
+      - SPARK_REST_URL=http://spark-master:6066/v1/submissions
     entrypoint: ["/opt/spark/sbin/start-worker.sh", "spark://spark-master:7077"]
     volumes:
       - ./src:/opt/airflow/src

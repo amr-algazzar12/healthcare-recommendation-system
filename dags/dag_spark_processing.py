@@ -17,8 +17,9 @@ import json
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.utils.dates import days_ago
 from airflow.operators.python import PythonOperator
-# from airflow.operators.trigger_dagrun import TriggerDagRunOperator  # M3
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 default_args = {
     "owner": "healthcare",
@@ -39,6 +40,8 @@ CH_DB    = "healthcare"
 CH_USER  = "healthcare_user"
 CH_PASS  = "ch_secret_2026"
 LOCAL_FEATURES   = "/opt/airflow/data/features/patient_features"
+HDFS_URL = 'http://namenode:9870'
+HDFS_FEATURES_PATH = "/data/features/patient_features"
 
 
 # ── Spark REST submission helper ──────────────────────────────────────────────
@@ -54,9 +57,10 @@ def _submit_spark_job(script_path: str, app_name: str, timeout_minutes: int = 60
 
     payload = {
         "action": "CreateSubmissionRequest",
-        "appResource": script_path,
+        "appResource": f"file://{script_path}",
         "clientSparkVersion": "3.5.3",
-        "mainClass": "org.apache.spark.deploy.SparkSubmit",
+        "mainClass": "org.apache.spark.deploy.PythonRunner",
+        "appArgs": [f"file://{script_path}", ""],
         "environmentVariables": {
             "SPARK_ENV_LOADED": "1",
             "SPARK_MASTER": SPARK_MASTER_URL,
@@ -70,6 +74,8 @@ def _submit_spark_job(script_path: str, app_name: str, timeout_minutes: int = 60
             "spark.sql.shuffle.partitions":    "8",
             "spark.network.timeout":           "300s",
             "spark.executor.heartbeatInterval":"60s",
+            "spark.jars": "",          # Use empty string instead of None
+            "spark.files": "",         # Use empty string instead of None
             "spark.jars.packages":             "",
         },
     }
@@ -82,9 +88,14 @@ def _submit_spark_job(script_path: str, app_name: str, timeout_minutes: int = 60
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        result = json.loads(resp.read())
-
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        # This will print the actual reason Spark rejected the JSON
+        error_message = e.read().decode("utf-8")
+        print(f"!!! Spark REST API Error: {error_message}")
+        raise RuntimeError(f"Spark rejected request: {error_message}")
     submission_id = result.get("submissionId")
     if not submission_id:
         raise RuntimeError(f"Spark submission failed: {result}")
@@ -140,31 +151,33 @@ def _feature_engineering(**ctx):
 
 def _load_features_to_clickhouse(**ctx):
     import sys
-    import os
-    import glob
-
-    src_root = "/opt/airflow/src"
-    if src_root not in sys.path:
-        sys.path.insert(0, src_root)
-
+    import io
     import pandas as pd
+    from hdfs import InsecureClient
     from utils.clickhouse_client import get_client
 
-    client = get_client()
-    client.command(f"TRUNCATE TABLE IF EXISTS {CH_DB}.patient_features")
+    if "/opt/airflow/src" not in sys.path:
+        sys.path.insert(0, "/opt/airflow/src")
+    
+    client_ch = get_client()
+    client_hdfs = InsecureClient(HDFS_URL, user='root')
+
+    # 1. Truncate ClickHouse Table
+    client_ch.command(f"TRUNCATE TABLE IF EXISTS healthcare.patient_features")
     print("==> Truncated healthcare.patient_features")
 
-    parquet_dir = LOCAL_FEATURES
-    if not os.path.exists(parquet_dir):
-        raise FileNotFoundError(
-            f"Features Parquet not found at {parquet_dir}. "
-            "Did feature_engineering complete successfully?"
-        )
+    # 2. List files via WebHDFS
+    try:
+        # This lists files within the HDFS directory
+        files = client_hdfs.list(HDFS_PATH)
+        parquet_files = [f for f in files if f.endswith('.parquet')]
+    except Exception as e:
+        raise FileNotFoundError(f"WebHDFS unreachable or path missing: {e}")
 
-    parquet_files = glob.glob(f"{parquet_dir}/*.parquet")
     if not parquet_files:
-        raise FileNotFoundError(f"No .parquet files in {parquet_dir}")
+        raise FileNotFoundError(f"No .parquet files found in HDFS at {HDFS_PATH}")
 
+    # Columns based on your healthcare schema
     CH_COLS = [
         "patient_id", "age", "gender_encoded", "race_encoded",
         "num_conditions", "num_medications", "num_encounters",
@@ -175,14 +188,22 @@ def _load_features_to_clickhouse(**ctx):
     ]
 
     total = 0
-    for pf in sorted(parquet_files):
-        df = pd.read_parquet(pf)
-        keep = [c for c in CH_COLS if c in df.columns]
-        client.insert_df(f"{CH_DB}.patient_features", df[keep])
-        total += len(df)
-        print(f"  {os.path.basename(pf)}: {len(df):,} rows")
+    for file_name in sorted(parquet_files):
+        full_hdfs_path = f"{HDFS_PATH}/{file_name}"
+        
+        # 3. Stream from HDFS directly into a Pandas DataFrame
+        with client_hdfs.read(full_hdfs_path) as reader:
+            # We read the binary stream into BytesIO so pandas can parse it
+            df = pd.read_parquet(io.BytesIO(reader.read()))
+            
+            # Filter for the columns we want in ClickHouse
+            keep = [c for c in CH_COLS if c in df.columns]
+            client_ch.insert_df("healthcare.patient_features", df[keep])
+            
+            total += len(df)
+            print(f"  Processed {file_name}: {len(df):,} rows")
 
-    print(f"==> Total inserted: {total:,}")
+    print(f"==> Successfully ingested {total:,} total rows via WebHDFS.")
 
 
 def _verify_features(**ctx):
@@ -211,7 +232,7 @@ with DAG(
     default_args=default_args,
     description="PySpark cleaning + feature engineering (Milestone 2)",
     schedule_interval=None,
-    start_date=datetime(2026, 1, 1),
+    start_date=days_ago(1),
     catchup=False,
     tags=["milestone-2", "spark"],
 ) as dag:
@@ -238,6 +259,11 @@ with DAG(
         python_callable=_verify_features,
     )
 
+    trigger_train = TriggerDagRunOperator(
+        task_id="trigger_dag_train_models",
+        trigger_dag_id="dag_train_models",
+        wait_for_completion=False,
+    )
     # ── Pipeline ──────────────────────────────────────────────────────────────
     clean_data >> feature_engineering >> load_features >> verify_features
-    # verify_features >> trigger_train  # uncomment for M3
+    verify_features >> trigger_train  

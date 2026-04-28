@@ -13,7 +13,6 @@ Run via:
     make run-clean
     (docker exec spark-master /opt/spark/bin/spark-submit ...)
 """
-**Issue Description:**
 
 import os
 from datetime import datetime

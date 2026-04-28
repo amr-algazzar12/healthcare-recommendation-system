@@ -1,4 +1,4 @@
-.PHONY: up fix-airflow down restart logs ps verify \
+.PHONY: up cl fix-airflow down restart logs ps verify \
         shell-namenode shell-clickhouse shell-airflow shell-spark \
         notebook generate-data init-hdfs load-hdfs clean-hdfs init-clickhouse load-clickhouse clean-clickhouse create-airflow-user \
         init-everything pipeline clean run-clean run-features pipeline-m2 explore
@@ -35,8 +35,7 @@ fix-airflow:
 down:
 	docker compose down
 
-restart:
-	docker compose restart
+restart: down up 
 
 logs:
 	docker compose logs -f --tail=100
@@ -81,7 +80,11 @@ load-hdfs:
 # 	docker exec namenode hdfs dfs -ls hdfs://namenode:9001/data/raw/
 
 clean-hdfs:
-	docker exec namenode sh -c "hdfs dfs -rm -r hdfs://namenode:9001/data/raw/*"	
+	docker exec namenode sh -c "hdfs dfs -rm -r hdfs://namenode:9001/data/raw/*"
+
+cl:
+	docker exec namenode sh -c "hdfs dfs -rm -r hdfs://namenode:9001/data/processed/*"
+	docker exec namenode sh -c "hdfs dfs -rm -r hdfs://namenode:9001/data/features/*"
 
 init-clickhouse:
 	docker exec -i clickhouse clickhouse-client --multiquery < docker/clickhouse/init/01_create_schema.sql
