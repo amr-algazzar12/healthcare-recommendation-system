@@ -118,25 +118,6 @@ create-airflow-user:
 
 init-everything: init-hdfs init-clickhouse create-airflow-user	
 
-run-clean:
-	docker exec spark-master /opt/spark/bin/spark-submit \
-	  --master spark://spark-master:7077 \
-	  --deploy-mode client \
-	  --executor-memory 2g \
-	  --driver-memory 1g \
-	  /opt/airflow/src/processing/clean.py
-
-run-features:
-	docker exec spark-master /opt/spark/bin/spark-submit \
-	  --master spark://spark-master:7077 \
-	  --deploy-mode client \
-	  --executor-memory 2g \
-	  --driver-memory 1g \
-	  /opt/airflow/src/processing/feature_engineering.py
-
-pipeline-m2:
-	docker exec airflow-webserver airflow dags trigger dag_spark_processing
-
 explore:
 	jupyter notebook notebooks/01_data_exploration.ipynb
 
@@ -166,4 +147,61 @@ clean:
 	docker compose down -v --remove-orphans
 	sudo rm -rf data/processed/* data/features/* data/clickhouse/* models/* logs/*
 
+# ── Milestone 2 — Cleaning and Feature Engineering (manual runs on spark-master) ────────────────
 
+run-clean:
+	docker exec spark-master /opt/spark/bin/spark-submit \
+	  --master spark://spark-master:7077 \
+	  --deploy-mode client \
+	  --executor-memory 2g \
+	  --driver-memory 1g \
+	  /opt/airflow/src/processing/clean.py
+
+run-features:
+	docker exec spark-master /opt/spark/bin/spark-submit \
+	  --master spark://spark-master:7077 \
+	  --deploy-mode client \
+	  --executor-memory 2g \
+	  --driver-memory 1g \
+	  /opt/airflow/src/processing/feature_engineering.py
+
+pipeline-m2:
+	docker exec airflow-webserver airflow dags trigger dag_spark_processing
+ 
+# ── Milestone 3 — Model training (manual runs on spark-master) ────────────────
+ 
+run-als:
+	docker exec spark-master /opt/spark/bin/spark-submit \
+	  --master spark://spark-master:7077 \
+	  --deploy-mode client \
+	  --executor-memory 2g \
+	  --driver-memory 2g \
+	  /opt/airflow/src/models/collaborative_filtering.py
+ 
+run-content-based:
+	docker exec spark-master /opt/spark/bin/spark-submit \
+	  --master spark://spark-master:7077 \
+	  --deploy-mode client \
+	  --executor-memory 2g \
+	  --driver-memory 1g \
+	  /opt/airflow/src/models/content_based.py
+ 
+run-hybrid:
+	docker exec spark-master /opt/spark/bin/spark-submit \
+	  --master spark://spark-master:7077 \
+	  --deploy-mode client \
+	  --executor-memory 2g \
+	  --driver-memory 1g \
+	  /opt/airflow/src/models/hybrid_model.py
+ 
+run-evaluate:
+	docker exec spark-master /opt/spark/bin/spark-submit \
+	  --master spark://spark-master:7077 \
+	  --deploy-mode client \
+	  /opt/airflow/src/models/evaluate.py
+ 
+train-all: run-als run-content-based run-hybrid run-evaluate
+	@echo "==> All models trained and evaluated"
+ 
+pipeline-m3:
+	docker exec airflow-webserver airflow dags trigger dag_train_models

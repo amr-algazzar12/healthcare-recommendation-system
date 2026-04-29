@@ -39,9 +39,8 @@ CH_PORT  = "8123"
 CH_DB    = "healthcare"
 CH_USER  = "healthcare_user"
 CH_PASS  = "ch_secret_2026"
-LOCAL_FEATURES   = "/opt/airflow/data/features/patient_features"
 HDFS_URL = 'http://namenode:9870'
-HDFS_FEATURES_PATH = "/data/features/patient_features"
+HDFS_PATH = "/data/features/patient_features"
 
 
 # ── Spark REST submission helper ──────────────────────────────────────────────
