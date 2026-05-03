@@ -217,9 +217,6 @@ services:
       - SPARK_MASTER_PORT=7077
       - SPARK_MASTER_OPTS=-Dspark.master.rest.enabled=true
       - SPARK_MASTER_WEBUI_PORT=8080
-      - SPARK_PUBLIC_DNS=localhost
-      - SPARK_LOCAL_IP=0.0.0.0
-      - _PIP_ADDITIONAL_REQUIREMENTS=numpy==1.24.4 pandas==2.1.4 scikit-learn==1.4.0 xgboost==2.0.3 mlflow==2.10.0 pyarrow==14.0.2 scipy==1.11.4
     entrypoint: ["/opt/spark/sbin/start-master.sh"]
     volumes:
       - ./src:/opt/airflow/src
@@ -245,10 +242,7 @@ services:
       - SPARK_WORKER_MEMORY=4g
       - SPARK_WORKER_CORES=4
       - SPARK_WORKER_WEBUI_PORT=8081
-      - SPARK_PUBLIC_DNS=localhost
-      - SPARK_LOCAL_IP=0.0.0.0
       - SPARK_REST_URL=http://spark-master:6066/v1/submissions
-      - _PIP_ADDITIONAL_REQUIREMENTS=numpy==1.24.4 pandas==2.1.4 scikit-learn==1.4.0 xgboost==2.0.3 mlflow==2.10.0 pyarrow==14.0.2 scipy==1.11.4
     entrypoint: ["/opt/spark/sbin/start-worker.sh", "spark://spark-master:7077"]
     volumes:
       - ./src:/opt/airflow/src
