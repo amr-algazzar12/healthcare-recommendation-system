@@ -208,49 +208,161 @@ def build_medication_features(
     Produces per-patient:
         patient_id,
         num_medications          (Int32)
-        medication_history_flags (Array(UInt8)) — multi-hot over top-30 codes
+        medication_history_flags (Array(Float32)) — TF-IDF weighted, L2-normalized
+
+    Weighting strategy:
+        TF  = log(1 + count of medication occurrences for this patient)
+              — log dampening prevents high-frequency drugs from dominating
+        IDF = log((total_patients + 1) / (patients_who_took_this_med + 1))
+              — sklearn-style smoothed IDF; reduces weight of ubiquitous drugs
+        TF-IDF = TF * IDF
+        Final vector = L2-normalize(TF-IDF) with epsilon smoothing
+
+    Epsilon smoothing (1e-4 added before normalisation):
+        Prevents fully-zero vectors for patients whose medications fall
+        entirely outside the top-N vocabulary, so cosine similarity never
+        collapses to zero for such patients.
+
+    Implementation uses only Spark built-in functions (pivot + array expr)
+    — no Python UDFs — for full executor-side parallelism and scalability.
     """
 
-    num_meds = (
+    # ── 1. Total patient count (for IDF denominator) ──────────────────────
+    total_patients = patients_ids.count()
+
+    # ── 2. Per-patient, per-medication raw occurrence count ───────────────
+    # Each row in medications = one prescription/dispensing event.
+    # We count raw rows (not distinct) so repeated prescriptions raise TF.
+    patient_med_counts = (
         medications
-        .groupBy("patient_id")
-        .agg(F.countDistinct("code").cast(IntegerType()).alias("num_medications"),
-             F.collect_set("code").alias("patient_med_codes"))
+        .groupBy("patient_id", "code")
+        .agg(F.count("*").cast(IntegerType()).alias("raw_count"))
     )
 
-    # Top-N medication codes by frequency
-    top_med_codes = (
+    # ── 3. Per-medication distinct patient count (for IDF) ────────────────
+    med_patient_counts = (
         medications
         .groupBy("code")
         .agg(F.countDistinct("patient_id").alias("patient_count"))
+    )
+
+    # ── 4. Select top-N medication codes by patient coverage ──────────────
+    # Ordering by patient_count (breadth) rather than total occurrences
+    # keeps the vocabulary representative of the population.
+    top_med_codes_df = (
+        med_patient_counts
         .orderBy(F.col("patient_count").desc())
         .limit(TOP_N_MEDICATIONS)
+    )
+
+    # Collect as an ordered Python list — order is fixed here and reused
+    # for both the pivot and the final array construction so columns always
+    # align with the same position in every patient's vector.
+    top_med_codes = (
+        top_med_codes_df
         .select("code")
         .rdd.flatMap(lambda r: [r[0]])
         .collect()
     )
-
     n_meds = len(top_med_codes)
-    _med_vocab = list(top_med_codes)
 
-    @F.udf(ArrayType(ByteType()))
-    def make_med_flags(med_code_set, vocab=_med_vocab):
-        if med_code_set is None:
-            return [0] * len(vocab)
-        code_set = set(med_code_set)
-        return [1 if c in code_set else 0 for c in vocab]
+    # ── 5. Compute smoothed IDF for top-N codes ───────────────────────────
+    # IDF = log((N + 1) / (df + 1))   — sklearn BM25-compatible smoothing
+    # Joining with top_med_codes_df restricts IDF table to vocabulary only.
+    idf_df = (
+        top_med_codes_df
+        .withColumn(
+            "idf",
+            F.log(F.lit(float(total_patients + 1)) / (F.col("patient_count") + 1))
+        )
+        .select("code", "idf")
+    )
 
-    num_meds = num_meds.withColumn(
-        "medication_history_flags", make_med_flags(F.col("patient_med_codes"))
-    ).drop("patient_med_codes")
+    # ── 6. Compute per-patient TF-IDF scores for top-N codes ──────────────
+    # inner join: keeps only (patient, code) pairs where code is in vocab
+    tfidf_df = (
+        patient_med_counts
+        .join(idf_df, on="code", how="inner")
+        .withColumn(
+            "tf",
+            F.log(F.lit(1.0) + F.col("raw_count").cast(FloatType()))
+        )
+        .withColumn("tfidf", F.col("tf") * F.col("idf"))
+        .select("patient_id", "code", "tfidf")
+    )
 
-    result = patients_ids.join(num_meds, on="patient_id", how="left")
+    # ── 7. Pivot to wide format: one column per vocabulary code ───────────
+    # Passing explicit values list guarantees consistent column ordering
+    # regardless of which codes happen to appear in a given data partition.
+    tfidf_wide = (
+        tfidf_df
+        .groupBy("patient_id")
+        .pivot("code", top_med_codes)
+        .agg(F.first("tfidf"))
+        .fillna(0.0)
+    )
 
-    result = result.fillna({"num_medications": 0}).withColumn(
-        "medication_history_flags",
-        F.coalesce(
-            F.col("medication_history_flags"),
-            F.array(*[F.lit(0).cast(ByteType())] * n_meds)
+    # ── 8. num_medications: distinct codes across ALL medications ─────────
+    # Intentionally counts the full medication history, not just top-N,
+    # so the count column retains its original semantics.
+    num_meds_df = (
+        medications
+        .groupBy("patient_id")
+        .agg(F.countDistinct("code").cast(IntegerType()).alias("num_medications"))
+    )
+
+    # ── 9. Build L2-normalised, epsilon-smoothed vector ───────────────────
+    #
+    # For each position i in the vocabulary:
+    #   smoothed_i  = tfidf_i + EPSILON
+    #   l2_norm     = sqrt( sum_i( smoothed_i ^ 2 ) )
+    #   final_i     = smoothed_i / l2_norm
+    #
+    # EPSILON (1e-4) is small enough not to distort real signal but large
+    # enough to guarantee a non-zero denominator and a non-zero vector even
+    # for patients with no top-N medication history.
+    EPSILON = 1e-4
+
+    # Smoothed raw expressions (before normalisation)
+    smoothed_exprs = [
+        (F.coalesce(F.col(f"`{c}`"), F.lit(0.0)) + F.lit(EPSILON)).cast(FloatType())
+        for c in top_med_codes
+    ]
+
+    # L2 norm computed entirely in Spark SQL (no UDF)
+    squared_sum_expr = sum(e ** 2 for e in smoothed_exprs)
+    l2_norm_expr = F.sqrt(squared_sum_expr)
+
+    # Final normalised array expression
+    normalized_exprs = [
+        (e / l2_norm_expr).cast(FloatType())
+        for e in smoothed_exprs
+    ]
+
+    tfidf_wide = (
+        tfidf_wide
+        .withColumn("medication_history_flags", F.array(*normalized_exprs))
+        .select("patient_id", "medication_history_flags")
+    )
+
+    # ── 10. Join back to patient spine ────────────────────────────────────
+    result = patients_ids.join(num_meds_df, on="patient_id", how="left")
+    result = result.join(tfidf_wide,   on="patient_id", how="left")
+
+    # Patients entirely absent from medications table get:
+    #   num_medications = 0
+    #   medication_history_flags = uniform epsilon-normalised vector
+    # The uniform vector is the L2-normalised all-epsilon array:
+    #   each element = ε / sqrt(n * ε²) = 1 / sqrt(n)
+    uniform_val = float(1.0 / (n_meds ** 0.5))
+    zero_fallback = F.array(*[F.lit(uniform_val).cast(FloatType())] * n_meds)
+
+    result = (
+        result
+        .fillna({"num_medications": 0})
+        .withColumn(
+            "medication_history_flags",
+            F.coalesce(F.col("medication_history_flags"), zero_fallback)
         )
     )
 
@@ -294,14 +406,12 @@ def build_patient_features(spark: SparkSession) -> DataFrame:
     patient_ids = patients.select("patient_id")
 
     # ── build each feature group ──────────────────────────────────────────
-    demo   = build_demographics(patients)                                     # patient_id, age, gender_encoded, race_encoded
-    cond   = build_condition_features(conditions, patient_ids)               # patient_id, num_conditions, has_*, condition_vector
-    meds   = build_medication_features(medications, patient_ids)             # patient_id, num_medications, medication_history_flags
-    enc    = build_encounter_features(encounters, patient_ids)               # patient_id, num_encounters
+    demo   = build_demographics(patients)
+    cond   = build_condition_features(conditions, patient_ids)
+    meds   = build_medication_features(medications, patient_ids)
+    enc    = build_encounter_features(encounters, patient_ids)
 
     # ── join on patient_id ────────────────────────────────────────────────
-    # Use string key (not column reference) so Spark deduplicates patient_id
-    # automatically — no ambiguous column errors.
     features = (
         demo
         .join(cond,  on="patient_id", how="left")
