@@ -10,22 +10,6 @@
 
 up:
 	docker compose up -d --build
-	@echo ""
-	@echo "==> Waiting for airflow-init to complete..."
-	@timeout 120 bash -c 'until docker inspect airflow-init --format "{{.State.Status}}" 2>/dev/null | grep -q "exited"; do sleep 3; printf "."; done'
-	@echo ""
-	@EXIT=$$(docker inspect airflow-init --format "{{.State.ExitCode}}" 2>/dev/null); \
-	  if [ "$$EXIT" = "0" ]; then \
-	    echo "==> airflow-init succeeded. Creating admin user..."; \
-	    docker exec airflow-webserver airflow users create \
-	      --username admin --firstname Healthcare --lastname Admin \
-	      --role Admin --email admin@healthcare.local \
-	      --password admin_secret_2026 2>/dev/null || true; \
-	  else \
-	    echo "ERROR: airflow-init failed (exit $$EXIT). Check: docker logs airflow-init"; \
-	  fi
-	sudo chown -R 50000:0 ./logs/airflow
-	docker compose restart airflow-init airflow-webserver airflow-scheduler
 
 fix-airflow:
 	sudo chown -R 50000:0 ./logs/airflow

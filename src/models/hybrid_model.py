@@ -22,6 +22,8 @@ Run via spark-submit from spark-master:
 import os
 import json
 import tempfile
+import io
+import joblib
 import mlflow
 import mlflow.xgboost
 import numpy as np
@@ -39,6 +41,8 @@ CH_DB           = os.environ.get("CLICKHOUSE_DB", "healthcare")
 CH_USER         = os.environ.get("CLICKHOUSE_USER", "healthcare_user")
 CH_PASS         = os.environ.get("CLICKHOUSE_PASSWORD", "ch_secret_2026")
 MODEL_NAME      = "healthcare-hybrid-xgboost"
+HDFS_MODEL_URL  = "http://namenode:9870/webhdfs/v1"   # WebHDFS REST — no Hadoop client needed
+HDFS_MODEL_PATH = "/models/hybrid_xgboost/model.joblib"
 EXPERIMENT_NAME = "healthcare-recommendations"
 TOP_K           = 10
 SEED            = 42
@@ -250,6 +254,67 @@ def ndcg_at_k(recommended, actual, k=TOP_K):
 
 # ── Training ──────────────────────────────────────────────────────────────────
 
+
+
+def _save_model_to_hdfs(model, feature_cols: list) -> bool:
+    """
+    Serialise the trained XGBoost model + feature column list with joblib,
+    then upload to HDFS via the WebHDFS REST API (two-step redirect).
+
+    Returns True on success, False on any error (non-fatal — MLflow artifact
+    is always the primary store; HDFS is the serving copy).
+    """
+    import io, joblib, requests
+
+    try:
+        # Serialise to bytes in memory
+        buf = io.BytesIO()
+        joblib.dump({"model": model, "feature_cols": feature_cols}, buf)
+        buf.seek(0)
+        model_bytes = buf.read()
+
+        base = HDFS_MODEL_URL
+
+        # Ensure parent directory exists
+        parent = "/".join(HDFS_MODEL_PATH.split("/")[:-1])
+        requests.put(
+            f"{base}{parent}?op=MKDIRS&permission=755",
+            timeout=15,
+        )
+
+        # Step 1 — get datanode upload URL
+        r1 = requests.put(
+            f"{base}{HDFS_MODEL_PATH}?op=CREATE&overwrite=true&noredirect=true",
+            timeout=15,
+        )
+        if r1.status_code != 200:
+            print(f"  WARN: HDFS CREATE step1 failed: {r1.status_code} {r1.text[:120]}")
+            return False
+
+        upload_url = r1.json().get("Location")
+        if not upload_url:
+            print("  WARN: HDFS CREATE returned no Location URL")
+            return False
+
+        # Step 2 — stream bytes to datanode
+        r2 = requests.put(
+            upload_url,
+            data=model_bytes,
+            headers={"Content-Type": "application/octet-stream"},
+            timeout=120,
+        )
+        if r2.status_code not in (200, 201):
+            print(f"  WARN: HDFS upload step2 failed: {r2.status_code} {r2.text[:120]}")
+            return False
+
+        print(f"==> Model saved to HDFS: {HDFS_MODEL_PATH} "
+              f"({len(model_bytes) / 1024:.1f} KB)")
+        return True
+
+    except Exception as e:
+        print(f"  WARN: HDFS save failed (non-fatal): {e}")
+        return False
+
 def train(dataset, features_df, meds_df, med_prev, sim_matrix):
     mlflow.set_tracking_uri(MLFLOW_URI)
     mlflow.set_experiment(EXPERIMENT_NAME)
@@ -308,7 +373,13 @@ def train(dataset, features_df, meds_df, med_prev, sim_matrix):
             registered_model_name=MODEL_NAME,
         )
 
-        mlflow.log_metric("training_complete", 1)
+        # Save to HDFS for serving from app container\n"
+        hdfs_ok = _save_model_to_hdfs(model, feature_cols)
+        mlflow.log_param(
+            "hdfs_model_path",
+            HDFS_MODEL_PATH if hdfs_ok else "not_saved"
+        )
+        mlflow.log_metric("training_complete", 1)        
 
         print(f"\n{'='*60}")
         print(f"Hybrid XGBoost Model — DONE")
