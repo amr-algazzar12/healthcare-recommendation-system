@@ -50,48 +50,48 @@ Six Airflow DAGs chain end-to-end via `TriggerDagRunOperator`. Every service liv
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  DATA SOURCE                                                            │
-│  Synthea™ EHR generator → 6 CSV files in data/raw/                     │
+│  Synthea™ EHR generator → 6 CSV files in data/raw/                      │
 │  (patients, conditions, medications, observations, encounters,          │
 │   procedures)                                                           │
 └────────────────────────┬────────────────────────────────────────────────┘
                          │
            ┌─────────────▼─────────────────────────┐
-           │  dag_ingest_to_hdfs    [Milestone 1]   │
-           │  validate CSVs → upload to HDFS        │
-           └─────────────┬─────────────────────────-┘
+           │  dag_ingest_to_hdfs    [Milestone 1]  │
+           │  validate CSVs → upload to HDFS       │
+           └─────────────┬─────────────────────────┘
                          │  TriggerDagRunOperator
            ┌─────────────▼─────────────────────────┐
-           │  dag_ingest_clickhouse [Milestone 1]   │
-           │  bulk-insert raw CSVs into ClickHouse  │
-           └─────────────┬─────────────────────────-┘
+           │  dag_ingest_clickhouse [Milestone 1]  │
+           │  bulk-insert raw CSVs into ClickHouse │
+           └─────────────┬─────────────────────────┘
                          │  TriggerDagRunOperator
            ┌─────────────▼─────────────────────────┐
-           │  dag_spark_processing  [Milestone 2]   │
-           │  Spark: clean.py → feature_engineering │
-           │  output: HDFS features + CH table      │
-           └─────────────┬─────────────────────────-┘
+           │  dag_spark_processing  [Milestone 2]  │
+           │  Spark: clean.py → feature_engineering│
+           │  output: HDFS features + CH table     │
+           └─────────────┬─────────────────────────┘
                          │  TriggerDagRunOperator
            ┌─────────────▼─────────────────────────┐
-           │  dag_train_models      [Milestone 3]   │
-           │  ALS → content-based → XGBoost hybrid  │
-           │  all runs logged to MLflow             │
-           └─────────────┬─────────────────────────-┘
+           │  dag_train_models      [Milestone 3]  │
+           │  ALS → content-based → XGBoost hybrid │
+           │  all runs logged to MLflow            │
+           └─────────────┬─────────────────────────┘
                          │  TriggerDagRunOperator
            ┌─────────────▼─────────────────────────┐
-           │  dag_evaluate_and_register             │
-           │  compare models → promote best →       │
-           │  MLflow Production stage               │
-           └─────────────┬─────────────────────────-┘
+           │  dag_evaluate_and_register            │
+           │  compare models → promote best →      │
+           │  MLflow Production stage              │
+           └─────────────┬─────────────────────────┘
                          │  TriggerDagRunOperator
            ┌─────────────▼─────────────────────────┐
-           │  dag_deploy_and_serve  [Milestone 4]   │
-           │  restart app with Production model     │
-           └─────────────┬─────────────────────────-┘
+           │  dag_deploy_and_serve  [Milestone 4]  │
+           │  restart app with Production model    │
+           └─────────────┬─────────────────────────┘
                          │
            ┌─────────────▼─────────────────────────┐
            │  SERVING LAYER                        │
-           │  Flask REST API      :5050             │
-           │  Streamlit Dashboard :8501             │
+           │  Flask REST API      :5050            │
+           │  Streamlit Dashboard :8501            │
            └───────────────────────────────────────┘
 
 Infrastructure (always running):
@@ -144,14 +144,8 @@ Infrastructure (always running):
 ### 1. Clone and enter the project
 
 ```bash
-git clone <repo-url> healthcare-recommendation-system
+git clone https://github.com/amr-algazzar12/healthcare-recommendation-system.git
 cd healthcare-recommendation-system
-```
-
-Or scaffold from the included init script (creates every file from scratch):
-
-```bash
-chmod +x init_project.sh && ./init_project.sh && cd healthcare-recommendation-system
 ```
 
 ### 2. Configure environment
@@ -172,6 +166,8 @@ make generate-data
 
 ```bash
 make up
+
+make fix-airflow         # change the ownership of log/airflow to 5000 for the aiflow container to access and modify it
 ```
 
 Wait ~90 seconds for all health checks to pass, then confirm everything is up:
@@ -192,16 +188,8 @@ make load-clickhouse     # bulk-inserts raw CSVs into ClickHouse
 
 **Via Airflow (recommended):**
 
-Open [http://localhost:8081](http://localhost:8081), log in as `admin / admin_secret_2026`, enable `dag_ingest_to_hdfs`, and trigger it. Each DAG automatically triggers the next.
+Open [http://localhost:8081](http://localhost:8081), log in as `admin / admin_secret_2026`, enable all 6 dags, and trigger `dag_ingest_to_hdfs`. Each DAG automatically triggers the next.
 
-**Via Makefile (manual):**
-
-```bash
-make pipeline-m2    # trigger dag_spark_processing (clean + features)
-make pipeline-m3    # trigger dag_train_models
-# — or — run everything locally on spark-master:
-make train-all
-```
 
 ### 7. Open the interfaces
 
@@ -212,6 +200,7 @@ make train-all
 | Airflow UI | http://localhost:8081 |
 | MLflow UI | http://localhost:5001 |
 | Spark Master UI | http://localhost:8080 |
+| HDFS Namenode UI | 9870 | http://localhost:9870 |
 
 ---
 
