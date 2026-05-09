@@ -200,7 +200,7 @@ Open [http://localhost:8081](http://localhost:8081), log in as `admin / admin_se
 | Airflow UI | http://localhost:8081 |
 | MLflow UI | http://localhost:5001 |
 | Spark Master UI | http://localhost:8080 |
-| HDFS Namenode UI | 9870 | http://localhost:9870 |
+| HDFS Namenode UI | http://localhost:9870 |
 
 ---
 
